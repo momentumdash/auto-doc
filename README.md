@@ -198,6 +198,28 @@ without narrowing `claude_args` first; there, anyone can open a PR and comment.
 - Repos using `AGENTS.md` instead of `CLAUDE.md` aren't supported yet — the
   allowlist and reply text both assume `CLAUDE.md`.
 
+## Releasing
+
+Callers reference the floating `v1` tag, and a ruleset on `refs/tags/v*` blocks
+updates, deletions and force pushes with **no bypass actors** — deliberately, so
+that whatever `v1` resolves to at run time can't be repointed by anyone with
+push access. `v1` is what receives `AUTO_DOC_APP_PRIVATE_KEY`, an org-wide
+credential.
+
+That means moving `v1` is a deliberate act, not a `git push -f`:
+
+1. Merge the change to `main`.
+2. Settings → Rules → `protect release tags` → set enforcement to **Disabled**.
+3. `git tag -f v1 && git push -f origin v1`
+4. Set enforcement back to **Active**, and confirm:
+   `gh api repos/momentumdash/auto-doc/rulesets --jq '.[] | "\(.name) \(.enforcement)"'`
+
+Adding a repository-admin bypass would remove those two clicks, at the cost of
+making the protection standing-optional rather than default-on. Not worth it —
+step 3 happens rarely, and the window in step 2 is short and chosen.
+
+Docs-only changes don't need any of this: the README isn't read at run time.
+
 ## Development
 
 ```sh
