@@ -58,7 +58,10 @@ on:
 jobs:
   extract:
     uses: momentumdash/auto-doc/.github/workflows/extract.yml@v1
-    secrets: inherit
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
+      AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
 ```
 
 ```yaml
@@ -69,12 +72,16 @@ on:
 jobs:
   integrate:
     uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v1
-    secrets: inherit
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
+      AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
 ```
 
 Triggers have to live in the calling repo — GitHub doesn't let a reusable
 workflow declare its own. Everything else (guards, permissions, concurrency) is
-central. `secrets: inherit` passes the org secrets through.
+central. Name the secrets rather than using `secrets: inherit`, which would pass
+the calling repo's *entire* secret set — see [Security model](#security-model).
 
 **2. Check repo Actions settings.** Settings → Actions → General:
 
@@ -155,9 +162,11 @@ a specific wording, so it never silently transfers to different text.
 ## Scope allowlist
 
 The proposed scope comes from user-written comments, so the integrator resolves
-it and writes only to `CLAUDE.md`, a nested `**/CLAUDE.md`, or `docs/**/*.md`.
-Anything else — absolute paths, `..` traversal, shell text — is dropped and
-noted in the doc PR body.
+it and is instructed to write only to `CLAUDE.md`, a nested `**/CLAUDE.md`, or a
+`docs/**/*.md` guide. Anything else — absolute paths, `..` traversal, shell text
+— is dropped and noted in the doc PR body. This allowlist lives in the prompt,
+not in code; see [Security model](#security-model) for what that does and
+doesn't guarantee.
 
 ## Security model
 
