@@ -1,0 +1,16 @@
+# Copy to .github/workflows/auto-doc-integrate.yml in the consuming repo.
+name: Auto-doc integrate
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  integrate:
+    uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v1
+    secrets: inherit
+    # Defaults to the repo's default branch. Override here, or set the
+    # AUTO_DOC_BASE_BRANCH repo variable, when doc PRs should target an
+    # integration branch instead (e.g. develop).
+    # with:
+    #   base-branch: develop

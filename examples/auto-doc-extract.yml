@@ -1,0 +1,15 @@
+# Copy to .github/workflows/auto-doc-extract.yml in the consuming repo.
+name: Auto-doc extract
+
+on:
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [edited]
+  issue_comment:
+    types: [created, edited]
+
+jobs:
+  extract:
+    uses: momentumdash/auto-doc/.github/workflows/extract.yml@v1
+    secrets: inherit

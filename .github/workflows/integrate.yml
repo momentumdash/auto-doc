@@ -1,0 +1,113 @@
+# Reusable merge-time auto-doc integrator. Call it from a repo that wants the
+# rules its reviewers approved folded into documentation.
+#
+# Walks the merged PR's comments, finds bot replies (marker: `<!-- auto-doc-bot -->`)
+# with a 👍 from a non-bot user and no 👎, and opens a single doc PR with the
+# resulting edits. Skips PRs already labeled `auto-doc` so it never feeds itself.
+#
+# See examples/auto-doc-integrate.yml for the caller.
+
+name: Auto-doc integrate
+
+on:
+  workflow_call:
+    inputs:
+      auto-doc-ref:
+        description: Ref of momentumdash/auto-doc to run. Keep in sync with the ref you call this workflow at.
+        type: string
+        default: v1
+      base-branch:
+        description: >-
+          Integration branch doc PRs branch from and target. Falls back to the
+          AUTO_DOC_BASE_BRANCH repo variable, then the repo's default branch.
+        type: string
+        default: ''
+      doc-style-file:
+        description: >-
+          Repo-relative doc that defines the house style for documentation. Read
+          by the integrator before it edits anything; silently skipped if absent.
+        type: string
+        default: docs/writing-docs.md
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: OAuth token for claude-code-action.
+        required: true
+      AUTO_DOC_APP_ID:
+        description: GitHub App ID, for a dedicated bot identity. Requires vars.AUTO_DOC_USE_APP == 'true'.
+        required: false
+      AUTO_DOC_APP_PRIVATE_KEY:
+        description: GitHub App private key (PEM). Requires vars.AUTO_DOC_USE_APP == 'true'.
+        required: false
+
+# Serialize per-PR so the integrator never races against itself.
+concurrency:
+  group: auto-doc-integrate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    if: |
+      github.event.pull_request.merged == true &&
+      !contains(github.event.pull_request.labels.*.name, 'auto-doc')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - name: Checkout calling repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout auto-doc
+        uses: actions/checkout@v4
+        with:
+          repository: momentumdash/auto-doc
+          ref: ${{ inputs.auto-doc-ref }}
+          path: _auto-doc
+          fetch-depth: 1
+
+      - name: Mint GitHub App token (optional, for dedicated bot identity)
+        id: app_token
+        if: ${{ vars.AUTO_DOC_USE_APP == 'true' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.AUTO_DOC_APP_ID }}
+          private-key: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Build integrator prompt
+        id: build_prompt
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          # The closed-PR checkout sits on the merged feature branch, so the
+          # integration branch must be explicit — otherwise the doc branch
+          # inherits the feature diff.
+          BASE_BRANCH: ${{ inputs.base-branch || vars.AUTO_DOC_BASE_BRANCH || github.event.repository.default_branch }}
+          DOC_STYLE_FILE: ${{ inputs.doc-style-file }}
+        run: |
+          {
+            echo 'prompt<<__AUTO_DOC_EOF__'
+            node _auto-doc/scripts/build-prompt.js integrate
+            echo
+            echo '__AUTO_DOC_EOF__'
+          } >> "$GITHUB_OUTPUT"
+
+      # Remove before the integrator runs: it works inside this checkout and
+      # would otherwise sweep the vendored scripts into the doc branch.
+      - name: Drop auto-doc checkout
+        run: rm -rf _auto-doc
+
+      - name: Run integrator
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app_token.outputs.token || secrets.GITHUB_TOKEN }}
+          prompt: ${{ steps.build_prompt.outputs.prompt }}
+          claude_args: '--allowed-tools Bash(gh:*),Bash(git:*),Bash(find:*),Read,Edit,Write,Grep,Glob'

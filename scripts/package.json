@@ -1,0 +1,10 @@
+{
+  "name": "auto-doc-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Auto-doc bot: classifies PR comments as architectural rules via the Anthropic SDK",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.96.0"
+  }
+}
