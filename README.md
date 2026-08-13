@@ -48,17 +48,32 @@ workflow declare its own. Everything else (guards, permissions, concurrency) is
 central. `secrets: inherit` passes the org secrets through.
 
 **2. Create the `auto-doc` label.** Required — the integrator passes
-`--label auto-doc` and every guard checks it, so a missing label fails the run.
+`--label auto-doc`, so a missing label fails the run.
 
 ```sh
 gh label create auto-doc --color C5DEF5 \
   --description "auto-doc PR; the auto-doc bot ignores it"
 ```
 
+The label is the recursion guard, not decoration. Without it, a review comment
+on a doc PR gets classified as a rule, approved, merged, and opens another doc
+PR — forever. Both job `if:` blocks and `hasAutoDocLabel()` in `extract.js`
+check it. A label is the marker rather than the `auto-doc/*` branch name
+because the `issue_comment` payload carries `issue.labels` but no head ref, so
+labels are the only signal present on all three extract triggers.
+
+Under `GITHUB_TOKEN` the loop is suppressed anyway — GitHub doesn't raise
+workflow events for its own actions. Switching to a GitHub App removes that
+suppression, which is the point (doc PRs get CI), and makes this label the only
+thing closing the loop.
+
 **3. Check repo Actions settings.** Settings → Actions → General:
 
 - Workflow permissions: **Read and write**
 - **Allow GitHub Actions to create and approve pull requests**: on
+
+Both only govern `GITHUB_TOKEN`. With a GitHub App configured they don't apply
+to auto-doc, though other workflows in the repo may still need them.
 
 ## Secrets and variables
 
@@ -77,6 +92,29 @@ Without a GitHub App the bot posts as `github-actions[bot]`, and **doc PRs it
 opens won't trigger CI** — GitHub suppresses workflow events from
 `GITHUB_TOKEN`-authored actions to prevent recursion. If a repo's doc PRs need
 checks to run, use the App.
+
+### GitHub App setup
+
+Create it at **Organization settings → Developer settings → GitHub Apps → New**:
+
+- **Webhook**: uncheck Active. The App is only an identity; nothing calls it.
+- **Repository permissions**:
+  - Contents: **Read and write** — pushing the doc branch
+  - Pull requests: **Read and write** — bot replies, PR creation, labels, reviewers
+  - Issues: **Read and write** — top-level PR comments go through the issues API
+  - Metadata: Read (mandatory, auto-selected)
+- **Install it on All repositories.** With a selected-repositories install plus
+  an org-level `AUTO_DOC_USE_APP`, any repo outside the selection fails at the
+  token-minting step. Scope with the variable instead of the installation: set
+  `AUTO_DOC_USE_APP` per repo if you don't want it everywhere.
+
+Then App ID → `AUTO_DOC_APP_ID`, generated private key (PEM, whole file) →
+`AUTO_DOC_APP_PRIVATE_KEY`, and `AUTO_DOC_USE_APP` → `true`.
+
+The workflows scope each minted token down to the calling repo, so the token in
+any given run can't reach the rest of the org. Installation tokens also get
+5,000 requests/hour against `GITHUB_TOKEN`'s 1,000, which matters on PRs with
+many review comments.
 
 ## Inputs
 
