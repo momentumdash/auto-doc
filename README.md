@@ -151,6 +151,38 @@ it and writes only to `CLAUDE.md`, a nested `**/CLAUDE.md`, or `docs/**/*.md`.
 Anything else — absolute paths, `..` traversal, shell text — is dropped and
 noted in the doc PR body.
 
+## Security model
+
+**Never use `secrets: inherit` to call these.** Inherit passes the caller's
+*entire* secret set, not just the secrets the called workflow declares. This
+workflow is defined in a public repo behind a movable `v1` tag, so anyone who
+can push here could repoint the tag and receive every secret the calling repo
+holds — release signing keys, store credentials, deploy tokens. The examples
+name the three secrets explicitly; keep it that way.
+
+**Protect the `v1` tag, or pin callers to a SHA.** `AUTO_DOC_APP_PRIVATE_KEY`
+is an org-wide credential, so whatever `v1` resolves to at run time is trusted
+with it. A tag ruleset that blocks non-admin updates to `v1` restores roughly
+the protection the code had when it lived inside a branch-protected repo.
+
+**The extractor never checks out the calling repo.** It only talks to the API,
+so no code from a PR under review is executed. The integrator does check out —
+but only after merge, so that code is already reviewed.
+
+**The human 👍 is the real gate**, and it's a gate on *rendered* text. That's
+why `buildReplyBody` strips HTML comments and collapses whitespace: GitHub
+renders `<!-- … -->` invisibly, so an unsanitized rule could show a reviewer
+something benign while the integrator reads something else. `scripts/test.js`
+covers this.
+
+**The integrator's path allowlist is prompt-enforced, not mechanical.** It runs
+with `Bash(gh:*)`, `Bash(git:*)` and a write-scoped token, so a sufficiently
+good injection that survives both the classifier's JSON schema and a human 👍
+could in principle reach writes outside `CLAUDE.md` / `docs/**`. For private
+repos this grants an attacker nothing they didn't already have — they needed
+write access to comment in the first place. **Don't run this on a public repo**
+without narrowing `claude_args` first; there, anyone can open a PR and comment.
+
 ## Known limitations
 
 - Only a review's **inline** comments are classified, not the review's top-level

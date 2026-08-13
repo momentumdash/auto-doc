@@ -8,7 +8,13 @@ on:
 jobs:
   integrate:
     uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v1
-    secrets: inherit
+    # Named explicitly rather than `secrets: inherit`. Inherit hands the called
+    # workflow EVERY secret this repo has, not just the ones it declares — and
+    # this one is defined in a public repo behind a movable tag.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
+      AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
     # Defaults to the repo's default branch. Override here, or set the
     # AUTO_DOC_BASE_BRANCH repo variable, when doc PRs should target an
     # integration branch instead (e.g. develop).

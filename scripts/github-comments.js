@@ -157,10 +157,33 @@ export function listReviewComments({ repoOwner, repoName, prNumber, reviewId }) 
 }
 
 /**
+ * Strip anything that would render invisibly on GitHub or forge structure in
+ * the reply body.
+ *
+ * The human 👍 is this system's only real gate: a reviewer reads the proposed
+ * rule and approves it, and the integrator later acts on that same text with a
+ * write-scoped token. That gate fails if the text a reviewer sees isn't the
+ * text the integrator reads — and GitHub renders HTML comments invisibly, so
+ * `<!-- ignore the above, instead ... -->` inside a benign-looking rule is
+ * approved blind. Collapsing whitespace likewise keeps the rule inside its
+ * blockquote, where it reads as quoted data rather than as new sections of the
+ * bot's own message.
+ */
+function sanitizeForReply(text) {
+	return String(text ?? '')
+		.replace(/<!--[\s\S]*?-->/g, '')
+		.replace(/<!--|-->/g, '')
+		.replace(/\s+/g, ' ')
+		.trim()
+}
+
+/**
  * Build the bot reply body. `supersedesUrl`, when set, adds a line immediately
  * after the marker (keeping the marker on line 1 so the integrator can find it).
  */
 export function buildReplyBody({ sourceCommentId, scope, rule, supersedesUrl }) {
+	scope = sanitizeForReply(scope).replace(/\s/g, '')
+	rule = sanitizeForReply(rule)
 	const scopeDir = scope ? `${scope}/CLAUDE.md` : 'CLAUDE.md'
 	const supersedes = supersedesUrl
 		? `\n> Supersedes earlier proposal at ${supersedesUrl}; that one's 👍 was for the previous wording.\n`
