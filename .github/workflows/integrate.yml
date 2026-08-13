@@ -53,7 +53,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      issues: read
+      # write, not read: the integrator creates the auto-doc label if the repo
+      # doesn't have one yet.
+      issues: write
       id-token: write
     steps:
       - name: Checkout calling repo

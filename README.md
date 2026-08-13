@@ -15,6 +15,27 @@ Two halves:
 Reactions are the only validation surface — the integrator never reads comment
 text for sentiment. A single 👎 from any non-bot user overrides any number of 👍s.
 
+### The `auto-doc` label
+
+The integrator stamps every doc PR it opens with an `auto-doc` label, creating
+the label first if the repo doesn't have one. Nobody applies it by hand.
+
+It's how the bot recognizes its own PRs and skips them. Without it, a review
+comment on a doc PR gets classified as a rule, approved, merged, and opens
+another doc PR — indefinitely. Both job `if:` blocks and `hasAutoDocLabel()` in
+`extract.js` check for it.
+
+Why a label and not "was this PR opened by the bot"? Because the bot's identity
+changes with configuration — `github-actions[bot]` normally, `<app-slug>[bot]`
+once a GitHub App is configured, and the slug differs per install. The label
+doesn't depend on any of that. The `auto-doc/*` branch name doesn't work either:
+the `issue_comment` payload carries `issue.labels` but no head ref.
+
+Under `GITHUB_TOKEN` the loop is suppressed anyway — GitHub doesn't raise
+workflow events for its own actions. A GitHub App removes that suppression,
+which is the point (doc PRs get CI), and leaves this label as the only thing
+closing the loop.
+
 ## Setup
 
 **1. Add two workflow files.** Copy from [`examples/`](examples/):
@@ -47,27 +68,7 @@ Triggers have to live in the calling repo — GitHub doesn't let a reusable
 workflow declare its own. Everything else (guards, permissions, concurrency) is
 central. `secrets: inherit` passes the org secrets through.
 
-**2. Create the `auto-doc` label.** Required — the integrator passes
-`--label auto-doc`, so a missing label fails the run.
-
-```sh
-gh label create auto-doc --color C5DEF5 \
-  --description "auto-doc PR; the auto-doc bot ignores it"
-```
-
-The label is the recursion guard, not decoration. Without it, a review comment
-on a doc PR gets classified as a rule, approved, merged, and opens another doc
-PR — forever. Both job `if:` blocks and `hasAutoDocLabel()` in `extract.js`
-check it. A label is the marker rather than the `auto-doc/*` branch name
-because the `issue_comment` payload carries `issue.labels` but no head ref, so
-labels are the only signal present on all three extract triggers.
-
-Under `GITHUB_TOKEN` the loop is suppressed anyway — GitHub doesn't raise
-workflow events for its own actions. Switching to a GitHub App removes that
-suppression, which is the point (doc PRs get CI), and makes this label the only
-thing closing the loop.
-
-**3. Check repo Actions settings.** Settings → Actions → General:
+**2. Check repo Actions settings.** Settings → Actions → General:
 
 - Workflow permissions: **Read and write**
 - **Allow GitHub Actions to create and approve pull requests**: on

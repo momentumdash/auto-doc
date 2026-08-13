@@ -78,7 +78,9 @@ When opening the PR (you are already on the branch you created in Step 3):
 
   a. Commit any MISSING edits with a clear message referencing the source PR. If the only outcome was CONTRADICTS (no file edits), make an empty commit (\`git commit --allow-empty -m 'auto-doc: surface contradictions from PR #${ctx.prNumber}'\`) so the PR has something to display.
   b. Push the branch: \`git push -u origin <branch-name>\`.
-  c. Open a PR against the \`${ctx.baseBranch}\` branch (NOT the repo default branch). Use the contradictions-only title when there are no MISSING edits so reviewers don't expect file changes:
+  c. Ensure the \`auto-doc\` label exists, since \`gh pr create --label\` fails outright on a missing label and the run's work would be lost. This is idempotent — ignore the error when it already exists:
+     gh label create auto-doc --color C5DEF5 --description 'auto-doc PR; the auto-doc bot ignores it' 2>/dev/null || true
+  d. Open a PR against the \`${ctx.baseBranch}\` branch (NOT the repo default branch). Use the contradictions-only title when there are no MISSING edits so reviewers don't expect file changes:
      # Pick title based on outcome:
      #   - Mixed or MISSING-only:   'Auto-doc: capture rules from PR #${ctx.prNumber}'
      #   - Contradictions-only:     'Auto-doc: capture rules from PR #${ctx.prNumber} (contradictions to reconcile)'
@@ -88,8 +90,8 @@ When opening the PR (you are already on the branch you created in Step 3):
                   --label auto-doc \\
                   --head <branch-name>
      (Write the PR body to a file first to handle multi-line content safely.)
-  d. PR body content: list each captured rule, link the source comment URL, note which doc file (CLAUDE.md or \`docs/\` guide) was edited and what section. For any CONTRADICTS rules, dedicate a top-level section asking the human to reconcile — do not silently apply them.
-  e. Request review from the source-comment authors:
+  e. PR body content: list each captured rule, link the source comment URL, note which doc file (CLAUDE.md or \`docs/\` guide) was edited and what section. For any CONTRADICTS rules, dedicate a top-level section asking the human to reconcile — do not silently apply them.
+  f. Request review from the source-comment authors:
      gh pr edit <new-pr-number> --add-reviewer <login1>,<login2>,...
      Use the unique set of source-comment author logins from Step 2 (skip the bot's own login if it appears).
 
