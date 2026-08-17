@@ -61,6 +61,10 @@ on:
 jobs:
   extract:
     uses: momentumdash/auto-doc/.github/workflows/extract.yml@v1
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
@@ -75,6 +79,11 @@ on:
 jobs:
   integrate:
     uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
@@ -85,6 +94,11 @@ Triggers have to live in the calling repo — GitHub doesn't let a reusable
 workflow declare its own. Everything else (guards, permissions, concurrency) is
 central. Name the secrets rather than using `secrets: inherit`, which would pass
 the calling repo's *entire* secret set — see [Security model](#security-model).
+
+Declare `permissions:` on the caller job as shown. A reusable workflow can't
+grant its job more than the calling workflow's `GITHUB_TOKEN` already has, so
+without this a repo whose default workflow permission is read-only silently caps
+the integrator and its push fails.
 
 **2. Check repo Actions settings.** Settings → Actions → General:
 
