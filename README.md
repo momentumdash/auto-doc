@@ -16,12 +16,15 @@ Reactions are the only validation surface — the integrator never reads comment
 text for sentiment. A single 👎 from any non-bot user overrides any number of 👍s.
 
 > [!WARNING]
-> **Private repositories only.** The integrator is an agent holding a
-> write-scoped token, and its path allowlist is enforced by its prompt rather
-> than mechanically. On a private repo an attacker needs write access to leave
-> a comment in the first place, so injection grants them nothing new. On a
-> public repo anyone can open a PR and comment. See
-> [Security model](#security-model) before adopting this anywhere public.
+> **Private repositories only, as it stands today.** The integrator is an agent
+> holding a write-scoped token, and its path allowlist is enforced by its prompt
+> rather than mechanically. On a private repo an attacker needs write access to
+> leave a comment in the first place, so injection grants them nothing new. On a
+> public repo anyone can open a PR and comment.
+>
+> Public use becomes defensible once the integrator's mechanics move out of the
+> agent — see [#2](https://github.com/momentumdash/auto-doc/issues/2) and
+> [Security model](#security-model). Until that lands, don't.
 
 ### The `auto-doc` label
 
@@ -210,18 +213,37 @@ without narrowing `claude_args` first; there, anyone can open a PR and comment.
 ## Releasing
 
 Callers reference the floating `v1` tag, and a ruleset on `refs/tags/v*` blocks
-updates, deletions and force pushes with **no bypass actors** — deliberately, so
-that whatever `v1` resolves to at run time can't be repointed by anyone with
-push access. `v1` is what receives `AUTO_DOC_APP_PRIVATE_KEY`, an org-wide
-credential.
+updates, deletions and force pushes. With no bypass actors configured that holds
+for everyone, deliberately: whatever `v1` resolves to at run time cannot be
+repointed by anyone with push access. `v1` is what receives
+`AUTO_DOC_APP_PRIVATE_KEY`, an org-wide credential.
 
 That means moving `v1` is a deliberate act, not a `git push -f`:
 
 1. Merge the change to `main`.
 2. Settings → Rules → `protect release tags` → set enforcement to **Disabled**.
-3. `git tag -f v1 && git push -f origin v1`
-4. Set enforcement back to **Active**, and confirm:
-   `gh api repos/momentumdash/auto-doc/rulesets --jq '.[] | "\(.name) \(.enforcement)"'`
+3. Tag the merged commit explicitly — `git tag -f v1` would use whatever your
+   local `HEAD` happens to be, which is how `v1` ends up pointing at unrelated
+   code:
+   ```sh
+   git fetch origin main
+   git tag -f v1 origin/main
+   git push -f origin v1
+   ```
+4. Set enforcement back to **Active**, then verify the whole policy rather than
+   just that a ruleset exists — enforcement alone doesn't tell you the pattern
+   or the rules survived an edit:
+   ```sh
+   id=$(gh api repos/momentumdash/auto-doc/rulesets --jq '.[] | select(.target=="tag") | .id')
+   gh api repos/momentumdash/auto-doc/rulesets/$id --jq \
+     '{enforcement, include: .conditions.ref_name.include, rules: [.rules[].type] | sort,
+       bypass: (.bypass_actors // [] | map("\(.actor_type):\(.bypass_mode)"))}'
+   ```
+   Expect `enforcement: "active"`, `include: ["refs/tags/v*"]` and
+   `rules: ["deletion","non_fast_forward","update"]`.
+
+A repository-admin bypass actor removes steps 2 and 4 at the cost of making the
+protection standing-optional rather than default-on.
 
 Adding a repository-admin bypass would remove those two clicks, at the cost of
 making the protection standing-optional rather than default-on. Not worth it —
