@@ -15,6 +15,17 @@ Two halves:
 Reactions are the only validation surface — the integrator never reads comment
 text for sentiment. A single 👎 from any non-bot user overrides any number of 👍s.
 
+> [!WARNING]
+> **Private repositories only, as it stands today.** The integrator is an agent
+> holding a write-scoped token, and its path allowlist is enforced by its prompt
+> rather than mechanically. On a private repo an attacker needs write access to
+> leave a comment in the first place, so injection grants them nothing new. On a
+> public repo anyone can open a PR and comment.
+>
+> Public use becomes defensible once the integrator's mechanics move out of the
+> agent — see [#2](https://github.com/momentumdash/auto-doc/issues/2) and
+> [Security model](#security-model). Until that lands, don't.
+
 ### The `auto-doc` label
 
 The integrator stamps every doc PR it opens with an `auto-doc` label, creating
@@ -50,7 +61,14 @@ on:
 jobs:
   extract:
     uses: momentumdash/auto-doc/.github/workflows/extract.yml@v1
-    secrets: inherit
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
+      AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
 ```
 
 ```yaml
@@ -61,12 +79,26 @@ on:
 jobs:
   integrate:
     uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v1
-    secrets: inherit
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
+      AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
 ```
 
 Triggers have to live in the calling repo — GitHub doesn't let a reusable
 workflow declare its own. Everything else (guards, permissions, concurrency) is
-central. `secrets: inherit` passes the org secrets through.
+central. Name the secrets rather than using `secrets: inherit`, which would pass
+the calling repo's *entire* secret set — see [Security model](#security-model).
+
+Declare `permissions:` on the caller job as shown. A reusable workflow can't
+grant its job more than the calling workflow's `GITHUB_TOKEN` already has, so
+without this a repo whose default workflow permission is read-only silently caps
+the integrator and its push fails.
 
 **2. Check repo Actions settings.** Settings → Actions → General:
 
@@ -147,9 +179,11 @@ a specific wording, so it never silently transfers to different text.
 ## Scope allowlist
 
 The proposed scope comes from user-written comments, so the integrator resolves
-it and writes only to `CLAUDE.md`, a nested `**/CLAUDE.md`, or `docs/**/*.md`.
-Anything else — absolute paths, `..` traversal, shell text — is dropped and
-noted in the doc PR body.
+it and is instructed to write only to `CLAUDE.md`, a nested `**/CLAUDE.md`, or a
+`docs/**/*.md` guide. Anything else — absolute paths, `..` traversal, shell text
+— is dropped and noted in the doc PR body. This allowlist lives in the prompt,
+not in code; see [Security model](#security-model) for what that does and
+doesn't guarantee.
 
 ## Security model
 
@@ -189,6 +223,47 @@ without narrowing `claude_args` first; there, anyone can open a PR and comment.
   summary body. State rules inline or use `/document`.
 - Repos using `AGENTS.md` instead of `CLAUDE.md` aren't supported yet — the
   allowlist and reply text both assume `CLAUDE.md`.
+
+## Releasing
+
+Callers reference the floating `v1` tag, and a ruleset on `refs/tags/v*` blocks
+updates, deletions and force pushes. With no bypass actors configured that holds
+for everyone, deliberately: whatever `v1` resolves to at run time cannot be
+repointed by anyone with push access. `v1` is what receives
+`AUTO_DOC_APP_PRIVATE_KEY`, an org-wide credential.
+
+That means moving `v1` is a deliberate act, not a `git push -f`:
+
+1. Merge the change to `main`.
+2. Settings → Rules → `protect release tags` → set enforcement to **Disabled**.
+3. Tag the merged commit explicitly — `git tag -f v1` would use whatever your
+   local `HEAD` happens to be, which is how `v1` ends up pointing at unrelated
+   code:
+   ```sh
+   git fetch origin main
+   git tag -f v1 origin/main
+   git push -f origin v1
+   ```
+4. Set enforcement back to **Active**, then verify the whole policy rather than
+   just that a ruleset exists — enforcement alone doesn't tell you the pattern
+   or the rules survived an edit:
+   ```sh
+   id=$(gh api repos/momentumdash/auto-doc/rulesets --jq '.[] | select(.target=="tag") | .id')
+   gh api repos/momentumdash/auto-doc/rulesets/$id --jq \
+     '{enforcement, include: .conditions.ref_name.include, rules: [.rules[].type] | sort,
+       bypass: (.bypass_actors // [] | map("\(.actor_type):\(.bypass_mode)"))}'
+   ```
+   Expect `enforcement: "active"`, `include: ["refs/tags/v*"]` and
+   `rules: ["deletion","non_fast_forward","update"]`.
+
+A repository-admin bypass actor removes steps 2 and 4 at the cost of making the
+protection standing-optional rather than default-on.
+
+Adding a repository-admin bypass would remove those two clicks, at the cost of
+making the protection standing-optional rather than default-on. Not worth it —
+step 3 happens rarely, and the window in step 2 is short and chosen.
+
+Docs-only changes don't need any of this: the README isn't read at run time.
 
 ## Development
 
