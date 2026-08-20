@@ -192,5 +192,6 @@ export function buildReplyBody({ sourceCommentId, scope, rule, supersedesUrl }) 
 📝 Add to \`${scopeDir}\`?
 > ${rule}
 
-React 👍 to capture at merge. React 👎 to dismiss (a single 👎 from any reviewer overrides any 👍s).`
+React 👍 to capture at merge. React 👎 to dismiss (a single 👎 from any reviewer overrides any 👍s).
+Want different wording? Reply \`/document <your rule text>\` — the bot posts a fresh proposal using your text verbatim.`
 }
