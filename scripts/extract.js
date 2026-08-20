@@ -64,7 +64,7 @@ async function processCandidate(cand, common, replies) {
 	// human-validated reply rather than deleting it on a transient failure.
 	if (!result) {
 		console.error(`auto-doc: classification unavailable for ${cand.id}; leaving any existing reply untouched`)
-		return
+		return 'unavailable'
 	}
 
 	if (!result.isRule) {
@@ -172,11 +172,21 @@ try {
 	process.exit(1)
 }
 
+let failed = 0
 for (const cand of candidates) {
 	try {
-		await processCandidate(cand, gathered.common, replies)
+		if ((await processCandidate(cand, gathered.common, replies)) === 'unavailable') failed++
 	} catch (err) {
 		// One bad comment shouldn't sink the rest of the batch.
 		console.error(`auto-doc: failed processing comment ${cand.id}: ${err?.message ?? err}`)
+		failed++
 	}
+}
+
+// Exit non-zero so a comment that never got classified shows as a red run.
+// Silently succeeding here is how a missing or expired ANTHROPIC_API_KEY hides:
+// every candidate fails, nothing is posted, and the job still reports green.
+if (failed > 0) {
+	console.error(`auto-doc: ${failed} of ${candidates.length} candidate(s) could not be classified`)
+	process.exit(1)
 }

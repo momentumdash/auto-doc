@@ -15,6 +15,14 @@ Two halves:
 Reactions are the only validation surface — the integrator never reads comment
 text for sentiment. A single 👎 from any non-bot user overrides any number of 👍s.
 
+> [!WARNING]
+> **Private repositories only.** The integrator is an agent holding a
+> write-scoped token, and its path allowlist is enforced by its prompt rather
+> than mechanically. On a private repo an attacker needs write access to leave
+> a comment in the first place, so injection grants them nothing new. On a
+> public repo anyone can open a PR and comment. See
+> [Security model](#security-model) before adopting this anywhere public.
+
 ### The `auto-doc` label
 
 The integrator stamps every doc PR it opens with an `auto-doc` label, creating
