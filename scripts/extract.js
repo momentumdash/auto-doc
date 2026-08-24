@@ -187,6 +187,6 @@ for (const cand of candidates) {
 // Silently succeeding here is how a missing or expired ANTHROPIC_API_KEY hides:
 // every candidate fails, nothing is posted, and the job still reports green.
 if (failed > 0) {
-	console.error(`auto-doc: ${failed} of ${candidates.length} candidate(s) could not be classified`)
+	console.error(`auto-doc: ${failed} of ${candidates.length} candidate(s) failed`)
 	process.exit(1)
 }
