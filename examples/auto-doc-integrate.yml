@@ -8,6 +8,14 @@ on:
 jobs:
   integrate:
     uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v1
+    # Declared here, not just in the called workflow: a reusable workflow
+    # cannot grant its job more than the caller's GITHUB_TOKEN already has,
+    # so a repo defaulting to read-only would silently cap these.
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
     # Named explicitly rather than `secrets: inherit`. Inherit hands the called
     # workflow EVERY secret this repo has, not just the ones it declares — and
     # this one is defined in a public repo behind a movable tag.
