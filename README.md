@@ -18,9 +18,9 @@ text for sentiment. A single 👎 from any non-bot user overrides any number of 
 > [!WARNING]
 > **Private repositories only, as it stands today.** The integrator is an agent
 > holding a write-scoped token, and its path allowlist is enforced by its prompt
-> rather than mechanically. On a private repo an attacker needs write access to
-> leave a comment in the first place, so injection grants them nothing new. On a
-> public repo anyone can open a PR and comment.
+> rather than mechanically. On a private repo an attacker needs repository
+> access to leave a comment in the first place, so the blast radius is people
+> you already let in. On a public repo anyone can open a PR and comment.
 >
 > Public use becomes defensible once the integrator's mechanics move out of the
 > agent — see [#2](https://github.com/momentumdash/auto-doc/issues/2) and
@@ -212,10 +212,12 @@ covers this.
 **The integrator's path allowlist is prompt-enforced, not mechanical.** It runs
 with `Bash(gh:*)`, `Bash(git:*)` and a write-scoped token, so a sufficiently
 good injection that survives both the classifier's JSON schema and a human 👍
-could in principle reach writes outside `CLAUDE.md` / `docs/**`. For private
-repos this grants an attacker nothing they didn't already have — they needed
-write access to comment in the first place. **Don't run this on a public repo**
-without narrowing `claude_args` first; there, anyone can open a PR and comment.
+could in principle reach writes outside `CLAUDE.md` / `docs/**`. On a private
+repo the attacker has to be someone you granted access to. Note that's a wider
+set than write access: in an org-owned repo, `Read` and `Triage` members can
+comment on pull requests too, so this does hand a read-only member a path to
+writes they don't otherwise have. **Don't run this on a public repo** without
+narrowing `claude_args` first; there, anyone can open a PR and comment.
 
 ## Known limitations
 
