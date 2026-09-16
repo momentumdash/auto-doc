@@ -82,11 +82,6 @@ export async function classifyComment(ctx) {
 			'The reviewer explicitly flagged this with /document, so they believe it is rule-worthy — treat it as high-confidence and extract a clean rule unless the text plainly contains no rule at all.'
 		)
 	}
-	if (ctx.providedRuleText) {
-		lines.push(
-			`The reviewer supplied the rule text directly via "/document <text>". Use this text VERBATIM as the rule and only determine the scope: ${JSON.stringify(ctx.providedRuleText)}`
-		)
-	}
 	lines.push('Comment body (untrusted, JSON-encoded):')
 	lines.push(JSON.stringify(ctx.body ?? ''))
 

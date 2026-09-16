@@ -14,26 +14,31 @@ if (!process.env.ANTHROPIC_API_KEY) {
 }
 
 // Each case: a comment, and whether it states a wide-area rule worth recording.
-// The FALSE cases are the point of the "wide-area only" bar — narrow, line-local
-// feedback the recall-first classifier used to capture.
+// Fixtures are deliberately kept OFF the classifier prompt's own few-shot list,
+// so this tests generalization rather than parroting the examples it was handed.
+// The hardest FALSE cases (marked) read as preferences ("always", "prefer") but
+// are scoped to the code in front of them — exactly the bar the precision rewrite
+// exists to hold: a fix phrased as a preference is still not a rule.
 const CASES = [
-	// Wide-area rules — recurring conventions a new contributor must know.
-	{ rule: true, body: "Don't import services into entities — entities should only depend on their constructor inputs." },
-	{ rule: true, body: 'Always use `git mv` when renaming files so history is preserved.' },
-	{ rule: true, body: 'Use the composition API for setup() and the options API everywhere else.' },
-	{ rule: true, body: 'Every z-index needs a comment naming what it sits above and below.' },
+	// Wide-area rules: recurring conventions a new contributor must know, none of
+	// which appear in the classifier's own prompt examples.
+	{ rule: true, body: 'Store all timestamps in UTC; convert to the local zone only at render time.' },
+	{ rule: true, body: 'Wrap every outbound third-party API call in a timeout so we never block indefinitely.' },
+	{ rule: true, body: 'User-facing error messages must never include a stack trace or an internal file path.' },
+	{ rule: true, body: 'Feature flags default to off and get removed within two releases of full rollout.' },
 	{ rule: true, body: 'Prefer Record types over Map for key-value data in TypeScript.' },
-	{ rule: true, body: 'Verb-prefixed names are reserved for methods; state should read as a noun phrase.' },
+	{ rule: true, body: 'Database migrations must be reversible; every up needs a matching down.' },
 
-	// Narrow / one-off / contentless — must be rejected.
-	{ rule: false, body: 'Looks good!' },
-	{ rule: false, body: 'Why did you do this here?' },
-	{ rule: false, body: 'Thanks for the fix.' },
-	{ rule: false, body: 'This variable name `x` is unclear here — maybe `count`?' },
-	{ rule: false, body: 'Move this function above its first caller.' },
-	{ rule: false, body: 'This if-branch could be simplified.' },
-	{ rule: false, body: 'nit: extra blank line' },
-	{ rule: false, body: 'Consider extracting this block into a helper.' },
+	// Narrow / one-off / contentless: must be rejected.
+	{ rule: false, body: 'Looks good, thanks!' },
+	{ rule: false, body: 'Can you rename `data` to `payload` on this line?' },
+	{ rule: false, body: 'This block reads cleaner if you invert the condition.' },
+	{ rule: false, body: 'nit: trailing whitespace' },
+	{ rule: false, body: 'Is there a reason this runs before the fetch?' },
+
+	// Preference-phrased but line-local: the discrimination the bar is built for.
+	{ rule: false, isLineAnchored: true, body: "I'd destructure the props right here instead of reading props.x each time." },
+	{ rule: false, isLineAnchored: true, body: 'Personally I always prefer an early return; can you flip this one?' },
 ]
 
 const results = await Promise.all(
@@ -42,7 +47,9 @@ const results = await Promise.all(
 			body: c.body,
 			prNumber: 0,
 			sourceCommentId: `eval-${i}`,
-			isLineAnchored: false,
+			isLineAnchored: c.isLineAnchored ?? false,
+			filePath: c.isLineAnchored ? 'src/components/Widget.tsx' : undefined,
+			line: c.isLineAnchored ? 42 : undefined,
 		})
 		if (!out) return { ...c, got: null, pass: false }
 		return { ...c, got: out.isRule, pass: out.isRule === c.rule }

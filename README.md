@@ -200,9 +200,9 @@ and their comments are never classified.
 
 ## The rule's documentation home
 
-The extractor never proposes a target file: it only sees the diff, so any
-location it guessed was usually wrong. The merge-time integrator, which can read
-the whole repo's doc tree, decides where each approved rule belongs. It is
+The extractor never proposes a target file: it only sees the diff, so guessing
+one is never reliable. The merge-time integrator, which can read the whole repo's
+doc tree, decides where each approved rule belongs. It is
 instructed to write only to `CLAUDE.md`, a nested `**/CLAUDE.md`, or a
 `docs/**/*.md` guide; anything it derives outside that — absolute paths, `..`
 traversal — is dropped and noted in the doc PR body. This allowlist lives in the
@@ -295,6 +295,8 @@ Docs-only changes don't need any of this: the README isn't read at run time.
 
 ```sh
 cd scripts && npm ci
+npm test          # offline checks: reply sanitization + author denylist
+npm run eval      # classifier eval against real model calls; needs ANTHROPIC_API_KEY, skips without one
 ```
 
 `extract.js` is the entrypoint for all three extract triggers; it reads the

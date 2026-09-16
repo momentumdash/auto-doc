@@ -93,6 +93,9 @@ jobs:
           # inherits the feature diff.
           BASE_BRANCH: ${{ inputs.base-branch || vars.AUTO_DOC_BASE_BRANCH || github.event.repository.default_branch }}
           DOC_STYLE_FILE: ${{ inputs.doc-style-file }}
+          # Automation logins whose 👍/👎 must not count as human validation, the
+          # same denylist the extractor applies to comments.
+          AUTO_DOC_IGNORE_AUTHORS: ${{ vars.AUTO_DOC_IGNORE_AUTHORS }}
         run: |
           {
             echo 'prompt<<__AUTO_DOC_EOF__'

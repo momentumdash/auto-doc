@@ -43,22 +43,24 @@ async function processCandidate(cand, common, replies) {
 		return
 	}
 
-	let result = await classifyComment({
-		body: cand.body,
-		filePath: cand.filePath,
-		line: cand.line,
-		prTitle: common.prTitle,
-		prNumber: common.prNumber,
-		isLineAnchored: cand.isLineAnchored,
-		sourceCommentId: cand.id,
-		manualMarker: markers.manualMarker,
-		providedRuleText: markers.providedRuleText,
-	})
-
-	// Explicit /document <text>: honor the reviewer's wording verbatim and force
-	// capture, regardless of the model's verdict.
+	// Explicit /document <text>: the rule text is supplied, so honor it verbatim
+	// and skip the classifier entirely — a call here would be discarded in full.
+	// Otherwise classify the comment (manualMarker /document with no text still
+	// needs the model to extract a clean rule).
+	let result
 	if (markers.providedRuleText) {
 		result = { isRule: true, rule: markers.providedRuleText }
+	} else {
+		result = await classifyComment({
+			body: cand.body,
+			filePath: cand.filePath,
+			line: cand.line,
+			prTitle: common.prTitle,
+			prNumber: common.prNumber,
+			isLineAnchored: cand.isLineAnchored,
+			sourceCommentId: cand.id,
+			manualMarker: markers.manualMarker,
+		})
 	}
 
 	// null = classification could not be completed (API error / refusal /
