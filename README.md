@@ -188,7 +188,7 @@ reviewers to ignore the bot. A rule the classifier misses can always be restated
 or forced with `/document`.
 
 `scripts/eval.js` is a labeled eval that guards this bar from regressing (run
-`ANTHROPIC_API_KEY=… npm run eval`; it skips without a key).
+`cd scripts && ANTHROPIC_API_KEY=… npm run eval`; it skips without a key).
 
 ## Ignored authors
 
