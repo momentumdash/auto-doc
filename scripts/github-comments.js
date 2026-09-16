@@ -180,18 +180,41 @@ function sanitizeForReply(text) {
 /**
  * Build the bot reply body. `supersedesUrl`, when set, adds a line immediately
  * after the marker (keeping the marker on line 1 so the integrator can find it).
+ *
+ * No target file is proposed: the extractor only sees the diff, so any location
+ * it guesses is usually wrong. The merge-time integrator, which can read the
+ * whole repo's doc tree, decides where the rule belongs.
  */
-export function buildReplyBody({ sourceCommentId, scope, rule, supersedesUrl }) {
-	scope = sanitizeForReply(scope).replace(/\s/g, '')
+export function buildReplyBody({ sourceCommentId, rule, supersedesUrl }) {
 	rule = sanitizeForReply(rule)
-	const scopeDir = scope ? `${scope}/CLAUDE.md` : 'CLAUDE.md'
 	const supersedes = supersedesUrl
 		? `\n> Supersedes earlier proposal at ${supersedesUrl}; that one's 👍 was for the previous wording.\n`
 		: ''
 	return `${botMarker(sourceCommentId)}${supersedes}
-📝 Add to \`${scopeDir}\`?
+📝 Capture this as a documented rule?
 > ${rule}
 
-React 👍 to capture at merge. React 👎 to dismiss (a single 👎 from any reviewer overrides any 👍s).
+React 👍 to record it at merge (the merge-time bot picks where it belongs). React 👎 to dismiss (a single 👎 from any reviewer overrides any 👍s).
 Want different wording? Reply \`/document <your rule text>\` — the bot posts a fresh proposal using your text verbatim.`
+}
+
+// Authors whose comments auto-doc never classifies. GitHub Apps (coderabbitai,
+// github-actions, ...) carry user.type === 'Bot' and are caught by the type
+// check; a bot backed by a plain user account (a PAT/machine user) does NOT, so
+// it needs an explicit login denylist. AUTO_DOC_IGNORE_AUTHORS is a
+// comma-separated list of such logins, matched case-insensitively.
+export function ignoredAuthorLogins(env = process.env) {
+	return new Set(
+		(env.AUTO_DOC_IGNORE_AUTHORS || '')
+			.split(',')
+			.map(s => s.trim().toLowerCase())
+			.filter(Boolean)
+	)
+}
+
+/** True when a comment's author should be skipped (a Bot, or a denylisted login). */
+export function isIgnoredAuthor(user, ignored) {
+	if (!user) return false
+	if (user.type === 'Bot') return true
+	return ignored.has((user.login || '').toLowerCase())
 }

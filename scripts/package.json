@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Auto-doc bot: classifies PR comments as architectural rules via the Anthropic SDK",
+  "scripts": {
+    "test": "node test.js",
+    "eval": "node eval.js"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0"
   }
