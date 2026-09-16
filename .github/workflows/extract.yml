@@ -42,6 +42,9 @@ jobs:
   extract:
     # Cheap pre-filter only — extract.js re-checks bot authorship and the
     # auto-doc label itself, so a caller may omit its own guards entirely.
+    # The AUTO_DOC_IGNORE_AUTHORS login denylist is enforced inside extract.js,
+    # not here: a job `if:` can't read a repo variable as a list, so a denylisted
+    # bot's comment still starts the job and then no-ops. That waste is accepted.
     if: |
       github.event.comment.user.type != 'Bot' &&
       github.event.review.user.type != 'Bot' &&
@@ -88,4 +91,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ steps.app_token.outputs.token || secrets.GITHUB_TOKEN }}
+          # Comma-separated logins whose comments are never classified — for bots
+          # backed by a plain user account (a PAT/machine user), which don't carry
+          # user.type == 'Bot'. GitHub App bots are already skipped by the type check.
+          AUTO_DOC_IGNORE_AUTHORS: ${{ vars.AUTO_DOC_IGNORE_AUTHORS }}
         run: node extract.js
