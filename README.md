@@ -196,7 +196,9 @@ Comments from GitHub App bots (`coderabbitai`, `github-actions`, …) are skippe
 automatically — they carry `user.type == "Bot"`. A bot backed by a plain user
 account (a PAT or machine user) does not, so list those logins in the
 `AUTO_DOC_IGNORE_AUTHORS` repo/org variable (comma-separated, case-insensitive)
-and their comments are never classified.
+and their comments are never classified. The same variable also gates the
+merge-time reaction check: a 👍 or 👎 from a bot account or a denylisted login
+counts as neither approval nor veto, so a bot can't cast the deciding vote.
 
 ## The rule's documentation home
 
@@ -205,9 +207,9 @@ one is never reliable. The merge-time integrator, which can read the whole repo'
 doc tree, decides where each approved rule belongs. It is
 instructed to write only to `CLAUDE.md`, a nested `**/CLAUDE.md`, or a
 `docs/**/*.md` guide; anything it derives outside that — absolute paths, `..`
-traversal — is dropped and noted in the doc PR body. This allowlist lives in the
-prompt, not in code; see [Security model](#security-model) for what that does and
-doesn't guarantee.
+traversal, or a path carrying shell/command text — is dropped and noted in the
+doc PR body. This allowlist lives in the prompt, not in code; see
+[Security model](#security-model) for what that does and doesn't guarantee.
 
 ## Security model
 

@@ -5,6 +5,7 @@
 // node test.js
 import assert from 'node:assert'
 import { BOT_MARKER_PREFIX, buildReplyBody, botMarker, ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
+import { integratorPrompt } from './prompts.js'
 
 const body = ({ rule = 'Use tabs.', supersedesUrl } = {}) =>
 	buildReplyBody({ sourceCommentId: 42, rule, supersedesUrl })
@@ -53,6 +54,20 @@ assert.strictEqual(isIgnoredAuthor({ type: 'User', login: 'dace' }, ignored), fa
 assert.strictEqual(ignoredAuthorLogins({}).size, 0)
 assert.strictEqual(isIgnoredAuthor({ type: 'User', login: 'dace' }, ignoredAuthorLogins({})), false)
 assert.strictEqual(isIgnoredAuthor(null, ignored), false)
+
+// --- Integrator reaction-gate denylist -------------------------------------
+// The merge-time approval gate must exclude denylisted logins from BOTH the +1
+// and -1 checks. With a denylist, the prompt names the accounts and carries the
+// "counts as neither approval nor veto" clause.
+const gated = integratorPrompt({ prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main', ignoreAuthors: ['coderabbitai', 'flarpGPT'] })
+assert.match(gated, /login is NOT one of these automation accounts/)
+assert.match(gated, /coderabbitai, flarpgpt/) // lowercased
+assert.match(gated, /counts as neither approval nor veto/)
+// Empty denylist: no dangling clause, and the base gate still renders.
+const ungated = integratorPrompt({ prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main' })
+assert.doesNotMatch(ungated, /automation accounts/)
+assert.doesNotMatch(ungated, /automation logins named above/)
+assert.match(ungated, /at least one `\+1` reaction from a user whose `user\.type != "Bot"`, AND/)
 
 console.log('ok — all offline checks passed')
 process.exit(0)
