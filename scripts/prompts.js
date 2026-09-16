@@ -103,7 +103,7 @@ When opening the PR (you are already on the branch you created in Step 3):
 }
 
 export function cleanupPrompt(ctx) {
-	const reviewers = (ctx.reviewers || []).map(s => String(s).trim()).filter(Boolean)
+	const reviewers = ctx.reviewers || [] // already trimmed/validated in build-prompt.js
 	const reviewerStep = reviewers.length
 		? `  e. Request review from the configured reviewers: \`gh pr edit "$pr_number" --add-reviewer ${reviewers.join(',')}\`. If a login can't be added (not a collaborator), note it in the PR body and continue — don't fail the run.\n`
 		: ''

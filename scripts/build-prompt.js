@@ -35,7 +35,12 @@ if (which === 'integrate') {
 			baseBranch: env.BASE_BRANCH || fail('BASE_BRANCH is required'),
 			docStyleFile: env.DOC_STYLE_FILE || 'docs/writing-docs.md',
 			// Logins to request review from on the cleanup PR (empty = none).
-			reviewers: (env.REVIEWERS || '').split(',').map(s => s.trim()).filter(Boolean),
+			// Validate against GitHub's username charset so a stray value can't be
+			// interpolated into the agent's gh command as anything but a login.
+			reviewers: (env.REVIEWERS || '')
+				.split(',')
+				.map(s => s.trim())
+				.filter(login => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?$/.test(login) && !login.endsWith('-')),
 		})
 	)
 } else {

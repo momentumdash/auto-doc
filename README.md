@@ -146,6 +146,7 @@ Set these at the org level so new repos need nothing but the two core workflow f
 | `AUTO_DOC_APP_PRIVATE_KEY` | secret | no | GitHub App private key (PEM). |
 | `AUTO_DOC_USE_APP` | variable | no | `'true'` to mint an App token instead of using `GITHUB_TOKEN`. |
 | `AUTO_DOC_BASE_BRANCH` | variable | no | Branch doc PRs target. Defaults to the repo's default branch. |
+| `AUTO_DOC_CLEANUP_REVIEWERS` | variable | no | Logins to request review from on the weekly cleanup PR. See [Weekly cleanup](#weekly-cleanup). |
 
 Without a GitHub App the bot posts as `github-actions[bot]`, and **doc PRs it
 opens won't trigger CI** — GitHub suppresses workflow events from
