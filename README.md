@@ -17,11 +17,14 @@ Reactions are the only validation surface — the integrator never reads comment
 text for sentiment. A single 👎 from any non-bot user overrides any number of 👍s.
 
 > [!WARNING]
-> **Private repositories only, as it stands today.** The integrator is an agent
-> holding a write-scoped token, and its path allowlist is enforced by its prompt
-> rather than mechanically. On a private repo an attacker needs repository
-> access to leave a comment in the first place, so the blast radius is people
-> you already let in. On a public repo anyone can open a PR and comment.
+> **Private repositories only, as it stands today.** The integrator and the
+> cleanup agent both hold a write-scoped token, and their path allowlists are
+> enforced by their prompts rather than mechanically. On a private repo an
+> attacker needs repository access to leave a comment in the first place, so the
+> blast radius is people you already let in. On a public repo anyone can open a
+> PR and comment. (The cleanup agent's injection surface is narrower: it reads
+> only already-merged docs, so a payload has to pass review first. See
+> [Security model](#security-model).)
 >
 > Public use becomes defensible once the integrator's mechanics move out of the
 > agent — see [#2](https://github.com/momentumdash/auto-doc/issues/2) and
@@ -133,12 +136,12 @@ to auto-doc, though other workflows in the repo may still need them.
 
 ## Secrets and variables
 
-Set these at the org level so new repos need nothing but the two workflow files.
+Set these at the org level so new repos need nothing but the two core workflow files (three if you add weekly cleanup).
 
 | Name | Kind | Required | Purpose |
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | secret | yes | Haiku classification calls in `extract.yml`. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | secret | yes | `claude-code-action` in `integrate.yml`. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | secret | yes | `claude-code-action` in `integrate.yml` and `cleanup.yml`. |
 | `AUTO_DOC_APP_ID` | secret | no | GitHub App ID, for a dedicated bot identity. |
 | `AUTO_DOC_APP_PRIVATE_KEY` | secret | no | GitHub App private key (PEM). |
 | `AUTO_DOC_USE_APP` | variable | no | `'true'` to mint an App token instead of using `GITHUB_TOKEN`. |
@@ -266,12 +269,23 @@ comment on pull requests too, so this does hand a read-only member a path to
 writes they don't otherwise have. **Don't run this on a public repo** without
 narrowing `claude_args` first; there, anyone can open a PR and comment.
 
+**The cleanup agent (`cleanup.yml`) holds the same write-scoped token and Bash
+tools**, and its documentation-only allowlist is likewise prompt-enforced, not
+mechanical. Its injection surface is narrower than the integrator's, though: it
+reads only already-merged `CLAUDE.md` / `docs/**` content, so a malicious payload
+must first pass review and merge (closer to an insider or compromised-reviewer
+scenario) rather than arriving in a live PR comment. It also takes no
+user-supplied input from its trigger (schedule / manual dispatch). Same rule
+applies: private repos until the mechanics move out of the agent
+([#2](https://github.com/momentumdash/auto-doc/issues/2)).
+
 ## Known limitations
 
 - Only a review's **inline** comments are classified, not the review's top-level
   summary body. State rules inline or use `/document`.
 - Repos using `AGENTS.md` instead of `CLAUDE.md` aren't supported yet — the
-  allowlist and reply text both assume `CLAUDE.md`.
+  allowlist, reply text, and the cleanup agent's file inventory all assume
+  `CLAUDE.md`.
 
 ## Releasing
 
@@ -322,6 +336,6 @@ cd scripts && npm ci
 
 `extract.js` is the entrypoint for all three extract triggers; it reads the
 event from `GITHUB_EVENT_PATH`. `classify.js` holds the classifier prompt and
-schema, `github-comments.js` the `gh` mechanics, `prompts.js` the integrator
-prompt. Ported out of `momentumdash/extension`, where it ran as two repo-local
-workflows.
+schema, `github-comments.js` the `gh` mechanics, `prompts.js` the integrator and
+cleanup prompts. Ported out of `momentumdash/extension`, where it ran as two
+repo-local workflows.
