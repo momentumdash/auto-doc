@@ -79,6 +79,11 @@ jobs:
           private-key: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          # Scope the minted token to exactly what the cleanup agent needs, rather
+          # than inheriting every permission the App installation holds.
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
 
       - name: Build cleanup prompt
         id: build_prompt

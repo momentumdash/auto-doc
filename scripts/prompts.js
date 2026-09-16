@@ -145,11 +145,11 @@ Try to read \`${ctx.docStyleFile}\` once. If it exists it is the single source o
 
 ## Step 4 — Edit
 
-Apply the policy above. Keep each change small and self-contained so a human can accept or reject it independently. If, after reading, there is genuinely nothing worth changing, STOP — do not open an empty PR.
+Apply the policy above. Keep each change small and self-contained so a human can accept or reject it independently. If there are no edits AND no unresolved contradictions to surface, STOP — do not open a PR.
 
 ## Step 5 — Open ONE pull request
 
-  a. Commit with a clear message (e.g. \`auto-doc: weekly docs cleanup <date>\`). Push: \`git push -u origin <branch-name>\`.
+  a. Commit edits with a clear message (e.g. \`auto-doc: weekly docs cleanup <date>\`). If only unresolved contradictions remain (no edits), make an empty commit (\`git commit --allow-empty -m 'auto-doc: surface doc contradictions'\`) so the PR has something to open against ${ctx.baseBranch}. Push: \`git push -u origin <branch-name>\`.
   b. Ensure the \`auto-doc\` label exists (this is what stops the bot from processing its own PR), idempotently:
      gh label create auto-doc --color C5DEF5 --description 'auto-doc PR; the auto-doc bot ignores it' 2>/dev/null || true
   c. Open the PR against \`${ctx.baseBranch}\` (NOT necessarily the repo default), labeled \`auto-doc\`, and capture its number from the URL \`gh pr create\` prints:
@@ -161,7 +161,7 @@ Apply the policy above. Keep each change small and self-contained so a human can
 
 This is how a human keeps, drops, or adjusts each edit. For every non-trivial hunk (skip pure typo/whitespace fixes):
   a. Use the \`pr_number\` from Step 5c, and its head SHA (\`gh pr view "$pr_number" --json commits --jq '.commits[-1].oid'\`).
-  b. Read the addressable lines from the diff hunk headers: \`gh api repos/${ctx.repoOwner}/${ctx.repoName}/pulls/"$pr_number"/files --jq '.[]|select(.filename=="<path>")|.patch'\`. Only new-file lines inside a hunk are addressable.
+  b. Read the addressable lines from the diff hunk headers: \`gh api --paginate repos/${ctx.repoOwner}/${ctx.repoName}/pulls/"$pr_number"/files --jq '.[]|select(.filename=="<path>")|.patch'\` (paginate: the files endpoint returns 30 per page). Only new-file lines inside a hunk are addressable.
   c. Post an inline comment anchored to the change explaining WHY you made it (contradiction resolved, obsolete rule removed, duplication collapsed, wording tightened):
      gh api repos/${ctx.repoOwner}/${ctx.repoName}/pulls/"$pr_number"/comments -X POST -F body='<why>' -F commit_id=<sha> -F path='<file>' -F line=<line> -F side=RIGHT
      If a line anchor 422s (line not in the diff), fall back to a top-level PR comment referencing \`file:line\`; do not retry the same anchor.
