@@ -103,6 +103,10 @@ When opening the PR (you are already on the branch you created in Step 3):
 }
 
 export function cleanupPrompt(ctx) {
+	const reviewers = (ctx.reviewers || []).map(s => String(s).trim()).filter(Boolean)
+	const reviewerStep = reviewers.length
+		? `  e. Request review from the configured reviewers: \`gh pr edit "$pr_number" --add-reviewer ${reviewers.join(',')}\`. If a login can't be added (not a collaborator), note it in the PR body and continue — don't fail the run.\n`
+		: ''
 	return `You are the weekly documentation-maintenance agent for the auto-documentation bot, running on a schedule against repo ${ctx.repoOwner}/${ctx.repoName}. Your job: tidy the repo's agent-facing documentation — the \`CLAUDE.md\` files and the \`docs/\` guides they link to — and open ONE pull request with the improvements, leaving an inline comment on each non-trivial change so a human can keep, drop, or adjust it.
 
 ## What "tidy" means here (a middle setting, not aggressive)
@@ -156,7 +160,7 @@ Apply the policy above. Keep each change small and self-contained so a human can
      pr_url=$(gh pr create --base ${ctx.baseBranch} --title 'Auto-doc: weekly docs cleanup' --body-file /tmp/auto-doc-cleanup-body.md --label auto-doc --head <branch-name>)
      pr_number=$(basename "$pr_url")
   d. PR body: a short summary of what you changed and why, plus a "Contradictions to reconcile" section for anything from Step 4 you deliberately left for a human. Write it to the file first for safe multi-line content.
-
+${reviewerStep}
 ## Step 6 — Leave an inline comment on each non-trivial change
 
 This is how a human keeps, drops, or adjusts each edit. For every non-trivial hunk (skip pure typo/whitespace fixes):

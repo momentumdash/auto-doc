@@ -27,8 +27,9 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
       AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
-    # Defaults to the repo's default branch. Override here, or set the
-    # AUTO_DOC_BASE_BRANCH repo variable, when the cleanup PR should target an
-    # integration branch instead (e.g. develop).
+    # base-branch defaults to the repo's default branch (override here or via the
+    # AUTO_DOC_BASE_BRANCH repo variable). reviewers is who gets requested on the
+    # cleanup PR: set it per repo (or via the AUTO_DOC_CLEANUP_REVIEWERS variable).
     # with:
     #   base-branch: develop
+    #   reviewers: your-github-login          # comma-separated for several

@@ -34,6 +34,8 @@ if (which === 'integrate') {
 			// resolves the fallback chain; bail rather than guess.
 			baseBranch: env.BASE_BRANCH || fail('BASE_BRANCH is required'),
 			docStyleFile: env.DOC_STYLE_FILE || 'docs/writing-docs.md',
+			// Logins to request review from on the cleanup PR (empty = none).
+			reviewers: (env.REVIEWERS || '').split(',').map(s => s.trim()).filter(Boolean),
 		})
 	)
 } else {

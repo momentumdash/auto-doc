@@ -191,6 +191,13 @@ matters if you pin a SHA instead of the floating `v1` tag.
   (default `docs/writing-docs.md`). Silently skipped if absent, in which case
   the agent infers style from the existing docs.
 
+`cleanup.yml` also takes:
+
+- `reviewers` — comma-separated GitHub logins to request review from on the
+  cleanup PR, resolved as input → `vars.AUTO_DOC_CLEANUP_REVIEWERS`. The
+  integrator infers reviewers from the source-comment authors, but a scheduled
+  cleanup has none, so name them per repo. Empty requests no one.
+
 ## Weekly cleanup
 
 `cleanup.yml` runs on a schedule (the example is Mondays 09:00 UTC; also
@@ -207,12 +214,14 @@ context locality, not bloat. It never changes what a rule means; a substantive
 conflict it can't resolve is surfaced in the PR body for a human, not silently
 decided.
 
-**Reviewing it.** The PR carries an inline comment on each non-trivial change
-explaining why. Keep what you like and merge, push edits, or reply on a comment
-to steer the next run. (A planned follow-up will let a 👎 on a comment revert
-just that change automatically.) Because the PR is labeled `auto-doc`, the
-extractor and integrator skip it, so reviewing or merging it never feeds the
-loop.
+**Reviewing it.** Whoever you name in `reviewers` is requested on the PR. It
+carries an inline comment on each non-trivial change explaining why. Keep what
+you like and merge, push edits, or reply on a comment to steer the next run. (A
+planned follow-up will let a 👎 on a comment revert just that change
+automatically. GitHub fires no workflow event on a reaction, so that step will
+be driven by a scheduled poll or a reply, not the reaction itself.) Because the
+PR is labeled `auto-doc`, the extractor and integrator skip it, so reviewing or
+merging it never feeds the loop.
 
 ## Reviewer controls
 
