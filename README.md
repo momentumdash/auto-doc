@@ -5,12 +5,13 @@ rule ("don't import services into entities"), the bot replies proposing it as a
 doc entry. React 👍 and it gets folded into the repo's docs when the PR merges;
 react 👎 and it's dropped. Nothing is written without a human 👍.
 
-Two halves:
+Three workflows:
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `extract.yml` | review submitted / comment created or edited | Classifies each comment with Haiku. Rule-worthy ones get a threaded bot reply carrying a `<!-- auto-doc-bot ref:N -->` marker. |
 | `integrate.yml` | PR merged | Collects marker replies with a 👍 and no 👎, decides covered / contradicts / missing per rule, and opens one doc PR. |
+| `cleanup.yml` | weekly schedule | Tidies the CLAUDE.md tree and the guides it links to (contradictions, bloat, drift), opens one doc PR, and comments inline on each change. See [Weekly cleanup](#weekly-cleanup). |
 
 Reactions are the only validation surface — the integrator never reads comment
 text for sentiment. A single 👎 from any non-bot user overrides any number of 👍s.
@@ -49,7 +50,8 @@ closing the loop.
 
 ## Setup
 
-**1. Add two workflow files.** Copy from [`examples/`](examples/):
+**1. Add the workflow files.** Copy from [`examples/`](examples/). The first two
+are the core loop; add the third for weekly cleanup:
 
 ```yaml
 # .github/workflows/auto-doc-extract.yml
@@ -79,6 +81,27 @@ on:
 jobs:
   integrate:
     uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
+      AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
+```
+
+```yaml
+# .github/workflows/auto-doc-cleanup.yml (optional, weekly cleanup)
+name: Auto-doc cleanup
+on:
+  schedule:
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+jobs:
+  cleanup:
+    uses: momentumdash/auto-doc/.github/workflows/cleanup.yml@v1
     permissions:
       contents: write
       pull-requests: write
@@ -151,18 +174,42 @@ many review comments.
 
 ## Inputs
 
-Both workflows take `auto-doc-ref` (default `v1`) — the ref of this repo whose
-scripts get checked out. Keep it in sync with the ref you call at; only matters
-if you pin a SHA instead of the floating `v1` tag.
+All three workflows take `auto-doc-ref` (default `v1`) — the ref of this repo
+whose scripts get checked out. Keep it in sync with the ref you call at; only
+matters if you pin a SHA instead of the floating `v1` tag.
 
-`integrate.yml` also takes:
+`integrate.yml` and `cleanup.yml` also take:
 
 - `base-branch` — resolved as input → `vars.AUTO_DOC_BASE_BRANCH` → the repo's
-  default branch. The `pull_request: closed` checkout sits on the merged feature
-  branch, so the integrator always branches explicitly from this instead of HEAD.
-- `doc-style-file` — house-style doc the integrator reads before editing
-  anything (default `docs/writing-docs.md`). Silently skipped if absent, in
-  which case the integrator infers style from the existing docs.
+  default branch. The doc PR branches from and targets this. The
+  `pull_request: closed` checkout (integrate) sits on the merged feature branch,
+  so the branch must be explicit rather than HEAD.
+- `doc-style-file` — house-style doc the agent reads before editing anything
+  (default `docs/writing-docs.md`). Silently skipped if absent, in which case
+  the agent infers style from the existing docs.
+
+## Weekly cleanup
+
+`cleanup.yml` runs on a schedule (the example is Mondays 09:00 UTC; also
+manually via **Actions → Auto-doc cleanup → Run workflow**). It reads the
+`CLAUDE.md` tree and the `docs/` guides those files link to, then opens one PR
+labeled `auto-doc` with tidy-ups. It never edits code, tests, or config, and it
+never merges. If there's nothing worth changing, it opens no PR.
+
+**A middle setting, not aggressive.** It resolves contradictions, cuts genuine
+bloat and obsolete rules, and tightens wording for the agents that read these
+files. It deliberately keeps duplication that earns its place — a rule repeated
+where an agent needs it, so it doesn't have to load another file, is good
+context locality, not bloat. It never changes what a rule means; a substantive
+conflict it can't resolve is surfaced in the PR body for a human, not silently
+decided.
+
+**Reviewing it.** The PR carries an inline comment on each non-trivial change
+explaining why. Keep what you like and merge, push edits, or reply on a comment
+to steer the next run. (A planned follow-up will let a 👎 on a comment revert
+just that change automatically.) Because the PR is labeled `auto-doc`, the
+extractor and integrator skip it, so reviewing or merging it never feeds the
+loop.
 
 ## Reviewer controls
 

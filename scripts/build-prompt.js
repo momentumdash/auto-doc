@@ -1,5 +1,5 @@
 /* global process */
-import { integratorPrompt } from './prompts.js'
+import { cleanupPrompt, integratorPrompt } from './prompts.js'
 
 const which = process.argv[2]
 const env = process.env
@@ -25,9 +25,18 @@ if (which === 'integrate') {
 			docStyleFile: env.DOC_STYLE_FILE || 'docs/writing-docs.md',
 		})
 	)
+} else if (which === 'cleanup') {
+	process.stdout.write(
+		cleanupPrompt({
+			repoOwner: env.REPO_OWNER || '',
+			repoName: env.REPO_NAME || '',
+			// Branch the cleanup PR branches from and targets. The workflow
+			// resolves the fallback chain; bail rather than guess.
+			baseBranch: env.BASE_BRANCH || fail('BASE_BRANCH is required'),
+			docStyleFile: env.DOC_STYLE_FILE || 'docs/writing-docs.md',
+		})
+	)
 } else {
-	// The extractor is now a direct SDK classifier (extract.js); only the
-	// merge-time integrator still builds a claude-code-action prompt.
-	console.error(`build-prompt: expected 'integrate', got: ${which}`)
+	console.error(`build-prompt: expected 'integrate' or 'cleanup', got: ${which}`)
 	process.exit(1)
 }
