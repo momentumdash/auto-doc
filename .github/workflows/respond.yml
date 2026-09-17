@@ -6,8 +6,11 @@
 #   - pull_request_review.submitted        -> the whole review, as ONE batch
 #   - pull_request_review_comment.created  -> a single standalone inline comment
 #   - issue_comment.created                -> a single top-level PR comment
-# A review's inline comments ride in the review event and do NOT each fire the
-# review_comment event, so there's no double-processing.
+# A review's inline comments normally ride in the review event and don't each
+# fire the review_comment event. Correctness does NOT rely on that, though: the
+# responder skips a comment whose thread is already resolved, so even a
+# re-delivered or overlapping event can't act on the same feedback twice
+# (per-PR concurrency serializes runs, so the second one sees the resolved thread).
 #
 # Loop safety: the job only runs for non-Bot authors, so the bot's own replies
 # (posted as a GitHub App, type Bot) never re-trigger it; under GITHUB_TOKEN the
