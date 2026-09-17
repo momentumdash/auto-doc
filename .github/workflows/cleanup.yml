@@ -1,0 +1,123 @@
+# Reusable weekly documentation-cleanup agent. Call it from a repo on a
+# schedule to keep its agent-facing docs (CLAUDE.md files and the docs/ guides
+# they link to) free of contradictions, bloat, and drift.
+#
+# It edits documentation on a fresh branch, opens ONE pull request labeled
+# `auto-doc`, and leaves an inline comment on each non-trivial change so a human
+# can keep, drop, or adjust it. It never touches code, tests, or config, and it
+# never merges. If there's nothing worth changing it opens no PR.
+#
+# See examples/auto-doc-cleanup.yml for the caller (schedule + manual dispatch).
+
+name: Auto-doc cleanup
+
+on:
+  workflow_call:
+    inputs:
+      auto-doc-ref:
+        description: Ref of momentumdash/auto-doc to run. Keep in sync with the ref you call this workflow at.
+        type: string
+        default: v1
+      base-branch:
+        description: >-
+          Branch the cleanup PR branches from and targets. Falls back to the
+          AUTO_DOC_BASE_BRANCH repo variable, then the repo's default branch.
+        type: string
+        default: ''
+      doc-style-file:
+        description: >-
+          Repo-relative doc that defines the house style for documentation. Read
+          before editing anything; silently skipped if absent.
+        type: string
+        default: docs/writing-docs.md
+      reviewers:
+        description: >-
+          Comma-separated GitHub logins to request review from on the cleanup PR
+          (unlike the integrator, cleanup has no source-comment author to infer
+          one from). Falls back to the AUTO_DOC_CLEANUP_REVIEWERS repo variable.
+          Empty requests no one.
+        type: string
+        default: ''
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: OAuth token for claude-code-action.
+        required: true
+      AUTO_DOC_APP_ID:
+        description: GitHub App ID, for a dedicated bot identity. Requires vars.AUTO_DOC_USE_APP == 'true'.
+        required: false
+      AUTO_DOC_APP_PRIVATE_KEY:
+        description: GitHub App private key (PEM). Requires vars.AUTO_DOC_USE_APP == 'true'.
+        required: false
+
+# Only one cleanup at a time per repo; never cancel one in flight.
+concurrency:
+  group: auto-doc-cleanup-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      # write, not read: the agent creates the auto-doc label if the repo
+      # doesn't have one yet.
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout calling repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout auto-doc
+        uses: actions/checkout@v4
+        with:
+          repository: momentumdash/auto-doc
+          ref: ${{ inputs.auto-doc-ref }}
+          path: _auto-doc
+          fetch-depth: 1
+
+      - name: Mint GitHub App token (optional, for dedicated bot identity)
+        id: app_token
+        if: ${{ vars.AUTO_DOC_USE_APP == 'true' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.AUTO_DOC_APP_ID }}
+          private-key: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          # Scope the minted token to exactly what the cleanup agent needs, rather
+          # than inheriting every permission the App installation holds.
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Build cleanup prompt
+        id: build_prompt
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          BASE_BRANCH: ${{ inputs.base-branch || vars.AUTO_DOC_BASE_BRANCH || github.event.repository.default_branch }}
+          DOC_STYLE_FILE: ${{ inputs.doc-style-file }}
+          REVIEWERS: ${{ inputs.reviewers || vars.AUTO_DOC_CLEANUP_REVIEWERS }}
+        run: |
+          {
+            echo 'prompt<<__AUTO_DOC_EOF__'
+            node _auto-doc/scripts/build-prompt.js cleanup
+            echo
+            echo '__AUTO_DOC_EOF__'
+          } >> "$GITHUB_OUTPUT"
+
+      # Remove before the agent runs: it works inside this checkout and would
+      # otherwise sweep the vendored scripts into the cleanup branch.
+      - name: Drop auto-doc checkout
+        run: rm -rf _auto-doc
+
+      - name: Run cleanup agent
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app_token.outputs.token || secrets.GITHUB_TOKEN }}
+          prompt: ${{ steps.build_prompt.outputs.prompt }}
+          claude_args: '--allowed-tools Bash(gh:*),Bash(git:*),Bash(find:*),Read,Edit,Write,Grep,Glob'
