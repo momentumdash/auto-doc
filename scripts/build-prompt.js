@@ -38,7 +38,7 @@ if (which === 'integrate') {
 			// a submitted review, else the single comment's id.
 			reviewId: env.REVIEW_ID || '',
 			commentId: env.COMMENT_ID || '',
-			// Same denylist the extractor applies; loop-safety also skips bots.
+			// Automation logins to skip, beyond the structural non-bot guard.
 			ignoreAuthors,
 		})
 	)

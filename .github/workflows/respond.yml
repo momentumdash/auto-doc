@@ -44,12 +44,15 @@ jobs:
     # loop guard; the label check keeps this to the bot's own PRs.
     if: >
       (github.event_name == 'pull_request_review' &&
+        github.event.action == 'submitted' &&
         github.event.review.user.type != 'Bot' &&
         contains(github.event.pull_request.labels.*.name, 'auto-doc')) ||
       (github.event_name == 'pull_request_review_comment' &&
+        github.event.action == 'created' &&
         github.event.comment.user.type != 'Bot' &&
         contains(github.event.pull_request.labels.*.name, 'auto-doc')) ||
       (github.event_name == 'issue_comment' &&
+        github.event.action == 'created' &&
         github.event.issue.pull_request != null &&
         github.event.comment.user.type != 'Bot' &&
         contains(github.event.issue.labels.*.name, 'auto-doc'))
@@ -60,12 +63,35 @@ jobs:
       issues: write
       id-token: write
     steps:
+      # Deterministic denylist enforcement. The job `if:` structurally blocks
+      # Bot-type authors; this catches bots backed by a plain user account
+      # (AUTO_DOC_IGNORE_AUTHORS) in code rather than trusting the agent to obey
+      # a prompt. If the triggering actor is denylisted, the token, prompt, and
+      # agent steps below are skipped.
+      - name: Author denylist guard
+        id: guard
+        env:
+          ACTOR: ${{ github.event.review.user.login || github.event.comment.user.login }}
+          DENYLIST: ${{ vars.AUTO_DOC_IGNORE_AUTHORS }}
+        run: |
+          actor="$(printf '%s' "$ACTOR" | tr '[:upper:]' '[:lower:]')"
+          denied=false
+          IFS=',' read -ra names <<< "$DENYLIST"
+          for n in "${names[@]}"; do
+            n="$(printf '%s' "$n" | xargs | tr '[:upper:]' '[:lower:]')"
+            if [ -n "$n" ] && [ "$n" = "$actor" ]; then denied=true; fi
+          done
+          echo "denied=$denied" >> "$GITHUB_OUTPUT"
+          if [ "$denied" = true ]; then echo "auto-doc: actor '$ACTOR' is denylisted; skipping."; fi
+
       - name: Checkout calling repo
+        if: ${{ steps.guard.outputs.denied != 'true' }}
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Checkout auto-doc
+        if: ${{ steps.guard.outputs.denied != 'true' }}
         uses: actions/checkout@v4
         with:
           repository: momentumdash/auto-doc
@@ -75,7 +101,7 @@ jobs:
 
       - name: Mint GitHub App token (optional, for dedicated bot identity)
         id: app_token
-        if: ${{ vars.AUTO_DOC_USE_APP == 'true' }}
+        if: ${{ vars.AUTO_DOC_USE_APP == 'true' && steps.guard.outputs.denied != 'true' }}
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.AUTO_DOC_APP_ID }}
@@ -88,6 +114,7 @@ jobs:
 
       - name: Build responder prompt
         id: build_prompt
+        if: ${{ steps.guard.outputs.denied != 'true' }}
         env:
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
@@ -108,12 +135,17 @@ jobs:
       # Remove before the responder runs: it works inside this checkout and would
       # otherwise sweep the vendored scripts into the PR branch.
       - name: Drop auto-doc checkout
+        if: ${{ steps.guard.outputs.denied != 'true' }}
         run: rm -rf _auto-doc
 
       - name: Run responder
+        if: ${{ steps.guard.outputs.denied != 'true' }}
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.app_token.outputs.token || secrets.GITHUB_TOKEN }}
           prompt: ${{ steps.build_prompt.outputs.prompt }}
-          claude_args: '--allowed-tools Bash(gh:*),Bash(git:*),Bash(find:*),Read,Edit,Write,Grep,Glob'
+          # gh narrowed to api + pr (no secret/repo/workflow/auth); the prompt
+          # further forbids merge, force-push, and settings/secret changes. This
+          # surface fires on every comment, so it is tighter than the integrator's.
+          claude_args: '--allowed-tools Bash(gh api:*),Bash(gh pr:*),Bash(git:*),Bash(find:*),Read,Edit,Write,Grep,Glob'

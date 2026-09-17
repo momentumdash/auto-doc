@@ -5,7 +5,7 @@ rule ("don't import services into entities"), the bot replies proposing it as a
 doc entry. React 👍 and it gets folded into the repo's docs when the PR merges;
 react 👎 and it's dropped. Nothing is written without a human 👍.
 
-Two halves:
+The workflows:
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
@@ -50,7 +50,8 @@ closing the loop.
 
 ## Setup
 
-**1. Add two workflow files.** Copy from [`examples/`](examples/):
+**1. Add the workflow files.** Copy from [`examples/`](examples/). The first two
+are the core loop; the responder is optional:
 
 ```yaml
 # .github/workflows/auto-doc-extract.yml
@@ -137,11 +138,12 @@ Set these at the org level so new repos need nothing but the two workflow files.
 | Name | Kind | Required | Purpose |
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | secret | yes | Haiku classification calls in `extract.yml`. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | secret | yes | `claude-code-action` in `integrate.yml`. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | secret | yes | `claude-code-action` in `integrate.yml` and `respond.yml`. |
 | `AUTO_DOC_APP_ID` | secret | no | GitHub App ID, for a dedicated bot identity. |
 | `AUTO_DOC_APP_PRIVATE_KEY` | secret | no | GitHub App private key (PEM). |
 | `AUTO_DOC_USE_APP` | variable | no | `'true'` to mint an App token instead of using `GITHUB_TOKEN`. |
 | `AUTO_DOC_BASE_BRANCH` | variable | no | Branch doc PRs target. Defaults to the repo's default branch. |
+| `AUTO_DOC_IGNORE_AUTHORS` | variable | no | Comma-separated automation logins `respond.yml` skips, beyond bot accounts. |
 
 Without a GitHub App the bot posts as `github-actions[bot]`, and **doc PRs it
 opens won't trigger CI** — GitHub suppresses workflow events from
@@ -191,8 +193,8 @@ triggering comment from the event.
 
 ## Responding to feedback
 
-Once a doc PR is open (from `integrate.yml` or a cleanup run), `respond.yml` lets
-you steer it by commenting, no local checkout needed. It fires on three events
+Once a doc PR is open, `respond.yml` lets you steer it by commenting, no local
+checkout needed. It fires on three events
 and treats them the way GitHub groups them:
 
 - a **submitted review** is handled as one batch (its inline comments ride in the
