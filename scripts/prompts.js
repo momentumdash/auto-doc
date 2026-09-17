@@ -114,8 +114,11 @@ export function cleanupPrompt(ctx) {
 The one test throughout: a line is **load-bearing** if deleting it changes what an agent does (it carries a command, a path, an invariant, a warning, or a "why"). Keep load-bearing lines; everything else is a candidate to cut.
 
 DO:
-  - **Resolve contradictions.** Where two docs (or two sections) give conflicting guidance on the same thing, fix it. If the conflict is one of substance (not just wording) and the correct answer isn't obvious from the code or the rest of the docs, do NOT pick one silently — surface it in the PR body under a "Contradictions to reconcile" heading and leave the text as-is for a human.
-  - **Cut what isn't load-bearing.** Remove obsolete or dead rules (guidance for code or tools that no longer exist — verify against the repo first), and collapse a repetition only when neither copy is load-bearing where it sits.
+  - **Resolve contradictions, after investigating.** Where two docs (or two sections) conflict on the same thing, don't guess and don't just flag it. First investigate: \`Grep\` the codebase to see which statement actually holds in practice, read \`git log\` / \`git blame\` on both passages to learn when and why each was written, and check whether they only *look* like a conflict because each is really scoped to a different area (a repo-wide rule vs. an app-local exception). Then:
+      - if the evidence is decisive, refine the guidance to match reality, folding in the scope nuance you found, and explain what you found in that change's inline comment;
+      - if it stays genuinely ambiguous, leave the text as-is and surface it in the PR body under "Contradictions to reconcile" — but attach your investigation (what holds where, why they conflict, the candidate resolutions) so a human reconciles from your analysis, not from scratch.
+    Never silently overwrite one side of a substantive conflict.
+  - **Cut what isn't load-bearing, after confirming it's dead.** Before removing a rule as obsolete, confirm it: \`Grep\` the code for the tool, pattern, or path it names, and check \`git\` history for whether it was recently and deliberately added. Remove it only when the thing it governs genuinely no longer exists. Collapse a repetition only when neither copy is load-bearing where it sits.
   - **Tighten wording** for the agents that read these files (principles below).
 
 DON'T over-cut:
