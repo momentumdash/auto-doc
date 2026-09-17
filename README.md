@@ -5,12 +5,13 @@ rule ("don't import services into entities"), the bot replies proposing it as a
 doc entry. React 👍 and it gets folded into the repo's docs when the PR merges;
 react 👎 and it's dropped. Nothing is written without a human 👍.
 
-Two halves:
+The workflows:
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `extract.yml` | review submitted / comment created or edited | Classifies each comment with Haiku. Rule-worthy ones get a threaded bot reply carrying a `<!-- auto-doc-bot ref:N -->` marker. |
 | `integrate.yml` | PR merged | Collects marker replies with a 👍 and no 👎, decides covered / contradicts / missing per rule, and opens one doc PR. |
+| `respond.yml` | comment / review on an auto-doc PR | Acts on a human's feedback on a doc PR the bot opened: reverts a change, applies a requested edit, or replies. See [Responding to feedback](#responding-to-feedback). |
 
 Reactions are the only validation surface — the integrator never reads comment
 text for sentiment. A single 👎 from any non-bot user overrides any number of 👍s.
@@ -49,7 +50,8 @@ closing the loop.
 
 ## Setup
 
-**1. Add two workflow files.** Copy from [`examples/`](examples/):
+**1. Add the workflow files.** Copy from [`examples/`](examples/). The first two
+are the core loop; the responder is optional:
 
 ```yaml
 # .github/workflows/auto-doc-extract.yml
@@ -90,6 +92,27 @@ jobs:
       AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
 ```
 
+```yaml
+# .github/workflows/auto-doc-respond.yml (optional; acts on feedback on doc PRs)
+name: Auto-doc respond
+on:
+  pull_request_review: { types: [submitted] }
+  pull_request_review_comment: { types: [created] }
+  issue_comment: { types: [created] }
+jobs:
+  respond:
+    uses: momentumdash/auto-doc/.github/workflows/respond.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
+      AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
+```
+
 Triggers have to live in the calling repo — GitHub doesn't let a reusable
 workflow declare its own. Everything else (guards, permissions, concurrency) is
 central. Name the secrets rather than using `secrets: inherit`, which would pass
@@ -115,11 +138,12 @@ Set these at the org level so new repos need nothing but the two workflow files.
 | Name | Kind | Required | Purpose |
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | secret | yes | Haiku classification calls in `extract.yml`. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | secret | yes | `claude-code-action` in `integrate.yml`. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | secret | yes | `claude-code-action` in `integrate.yml` and `respond.yml`. |
 | `AUTO_DOC_APP_ID` | secret | no | GitHub App ID, for a dedicated bot identity. |
 | `AUTO_DOC_APP_PRIVATE_KEY` | secret | no | GitHub App private key (PEM). |
 | `AUTO_DOC_USE_APP` | variable | no | `'true'` to mint an App token instead of using `GITHUB_TOKEN`. |
 | `AUTO_DOC_BASE_BRANCH` | variable | no | Branch doc PRs target. Defaults to the repo's default branch. |
+| `AUTO_DOC_IGNORE_AUTHORS` | variable | no | Comma-separated automation logins `respond.yml` skips, beyond bot accounts. |
 
 Without a GitHub App the bot posts as `github-actions[bot]`, and **doc PRs it
 opens won't trigger CI** — GitHub suppresses workflow events from
@@ -151,7 +175,7 @@ many review comments.
 
 ## Inputs
 
-Both workflows take `auto-doc-ref` (default `v1`) — the ref of this repo whose
+Every workflow takes `auto-doc-ref` (default `v1`) — the ref of this repo whose
 scripts get checked out. Keep it in sync with the ref you call at; only matters
 if you pin a SHA instead of the floating `v1` tag.
 
@@ -163,6 +187,34 @@ if you pin a SHA instead of the floating `v1` tag.
 - `doc-style-file` — house-style doc the integrator reads before editing
   anything (default `docs/writing-docs.md`). Silently skipped if absent, in
   which case the integrator infers style from the existing docs.
+
+`respond.yml` takes only `auto-doc-ref`; it derives the PR, its branches, and the
+triggering comment from the event.
+
+## Responding to feedback
+
+Once a doc PR is open, `respond.yml` lets you steer it by commenting, no local
+checkout needed. It fires on three events
+and treats them the way GitHub groups them:
+
+- a **submitted review** is handled as one batch (its inline comments ride in the
+  one `pull_request_review` event, so they don't each fire separately);
+- a **standalone inline comment** and a **top-level PR comment** each fire on
+  their own.
+
+For each human comment it classifies the intent and acts on the PR's head branch:
+
+| You comment | It does |
+| --- | --- |
+| "revert this" / "keep the original" on a diff hunk | Restores the base version of exactly that hunk, pushes, replies with the SHA, resolves the thread. |
+| "reword to X" / "call it Y" | Makes that edit, pushes, replies, resolves the thread. |
+| a question, or something too vague | Replies asking for the specific change; makes no edit, leaves the thread open. |
+| "lgtm" / thanks | Nothing. |
+
+It edits documentation only (same allowlist as the integrator) and never touches
+the base branch. **Loop safety**: the job runs only for non-bot authors, so the
+bot's own replies never re-trigger it. Because the PR keeps its `auto-doc` label,
+none of this feeds the extractor or integrator.
 
 ## Reviewer controls
 
@@ -218,6 +270,15 @@ set than write access: in an org-owned repo, `Read` and `Triage` members can
 comment on pull requests too, so this does hand a read-only member a path to
 writes they don't otherwise have. **Don't run this on a public repo** without
 narrowing `claude_args` first; there, anyone can open a PR and comment.
+
+**The responder (`respond.yml`) holds the same write-scoped token and Bash
+tools**, and acts on comment text a human writes on a doc PR, so its
+documentation-only allowlist is again prompt-enforced, not mechanical. Its
+loop-safety guard is structural: the job's `if:` runs only for non-bot authors,
+so the bot's own replies (posted as a GitHub App, type Bot) never re-trigger it,
+and under `GITHUB_TOKEN` those events are suppressed anyway. On a public repo,
+the same "anyone can comment" caveat applies, more so, since a comment here can
+ask for an edit, not just propose one.
 
 ## Known limitations
 
