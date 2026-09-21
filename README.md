@@ -5,23 +5,27 @@ rule ("don't import services into entities"), the bot replies proposing it as a
 doc entry. React 👍 and it gets folded into the repo's docs when the PR merges;
 react 👎 and it's dropped. Nothing is written without a human 👍.
 
-The workflows:
+Four workflows:
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `extract.yml` | review submitted / comment created or edited | Classifies each comment with Haiku. Rule-worthy ones get a threaded bot reply carrying a `<!-- auto-doc-bot ref:N -->` marker. |
 | `integrate.yml` | PR merged | Collects marker replies with a 👍 and no 👎, decides covered / contradicts / missing per rule, and opens one doc PR. |
+| `cleanup.yml` | weekly schedule | Tidies the CLAUDE.md tree and the guides it links to (contradictions, bloat, drift), opens one doc PR, and comments inline on each change. See [Weekly cleanup](#weekly-cleanup). |
 | `respond.yml` | comment / review on an auto-doc PR | Acts on a human's feedback on a doc PR the bot opened: reverts a change, applies a requested edit, or replies. See [Responding to feedback](#responding-to-feedback). |
 
 Reactions are the only validation surface — the integrator never reads comment
 text for sentiment. A single 👎 from any non-bot user overrides any number of 👍s.
 
 > [!WARNING]
-> **Private repositories only, as it stands today.** The integrator is an agent
-> holding a write-scoped token, and its path allowlist is enforced by its prompt
-> rather than mechanically. On a private repo an attacker needs repository
-> access to leave a comment in the first place, so the blast radius is people
-> you already let in. On a public repo anyone can open a PR and comment.
+> **Private repositories only, as it stands today.** The integrator and the
+> cleanup agent both hold a write-scoped token, and their path allowlists are
+> enforced by their prompts rather than mechanically. On a private repo an
+> attacker needs repository access to leave a comment in the first place, so the
+> blast radius is people you already let in. On a public repo anyone can open a
+> PR and comment. (The cleanup agent's injection surface is narrower: it reads
+> only already-merged docs, so a payload has to pass review first. See
+> [Security model](#security-model).)
 >
 > Public use becomes defensible once the integrator's mechanics move out of the
 > agent — see [#2](https://github.com/momentumdash/auto-doc/issues/2) and
@@ -51,7 +55,7 @@ closing the loop.
 ## Setup
 
 **1. Add the workflow files.** Copy from [`examples/`](examples/). The first two
-are the core loop; the responder is optional:
+are the core loop; the cleanup and responder workflows are optional:
 
 ```yaml
 # .github/workflows/auto-doc-extract.yml
@@ -81,6 +85,27 @@ on:
 jobs:
   integrate:
     uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
+      AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
+```
+
+```yaml
+# .github/workflows/auto-doc-cleanup.yml (optional, weekly cleanup)
+name: Auto-doc cleanup
+on:
+  schedule:
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+jobs:
+  cleanup:
+    uses: momentumdash/auto-doc/.github/workflows/cleanup.yml@v1
     permissions:
       contents: write
       pull-requests: write
@@ -138,11 +163,12 @@ Set these at the org level so new repos need nothing but the workflow files.
 | Name | Kind | Required | Purpose |
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | secret | yes | Haiku classification calls in `extract.yml`. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | secret | yes | `claude-code-action` in `integrate.yml` and `respond.yml`. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | secret | yes | `claude-code-action` in `integrate.yml`, `cleanup.yml`, and `respond.yml`. |
 | `AUTO_DOC_APP_ID` | secret | no | GitHub App ID, for a dedicated bot identity. |
 | `AUTO_DOC_APP_PRIVATE_KEY` | secret | no | GitHub App private key (PEM). |
 | `AUTO_DOC_USE_APP` | variable | no | `'true'` to mint an App token instead of using `GITHUB_TOKEN`. |
 | `AUTO_DOC_BASE_BRANCH` | variable | no | Branch doc PRs target. Defaults to the repo's default branch. |
+| `AUTO_DOC_CLEANUP_REVIEWERS` | variable | no | Logins to request review from on the weekly cleanup PR. See [Weekly cleanup](#weekly-cleanup). |
 | `AUTO_DOC_IGNORE_AUTHORS` | variable | no | Comma-separated automation logins the bot skips: never classified by the extractor, never counted in the integrator's reaction gate, and skipped by `respond.yml`, beyond bot accounts. See [Ignored authors](#ignored-authors). |
 
 Without a GitHub App the bot posts as `github-actions[bot]`, and **doc PRs it
@@ -179,14 +205,47 @@ Every workflow takes `auto-doc-ref` (default `v1`) — the ref of this repo whos
 scripts get checked out. Keep it in sync with the ref you call at; only matters
 if you pin a SHA instead of the floating `v1` tag.
 
-`integrate.yml` also takes:
+`integrate.yml` and `cleanup.yml` also take:
 
 - `base-branch` — resolved as input → `vars.AUTO_DOC_BASE_BRANCH` → the repo's
-  default branch. The `pull_request: closed` checkout sits on the merged feature
-  branch, so the integrator always branches explicitly from this instead of HEAD.
-- `doc-style-file` — house-style doc the integrator reads before editing
-  anything (default `docs/writing-docs.md`). Silently skipped if absent, in
-  which case the integrator infers style from the existing docs.
+  default branch. The doc PR branches from and targets this. The
+  `pull_request: closed` checkout (integrate) sits on the merged feature branch,
+  so the branch must be explicit rather than HEAD.
+- `doc-style-file` — house-style doc the agent reads before editing anything
+  (default `docs/writing-docs.md`). Silently skipped if absent, in which case
+  the agent infers style from the existing docs.
+
+`cleanup.yml` also takes:
+
+- `reviewers` — comma-separated GitHub logins to request review from on the
+  cleanup PR, resolved as input → `vars.AUTO_DOC_CLEANUP_REVIEWERS`. The
+  integrator infers reviewers from the source-comment authors, but a scheduled
+  cleanup has none, so name them per repo. Empty requests no one.
+
+## Weekly cleanup
+
+`cleanup.yml` runs on a schedule (the example is Mondays 09:00 UTC; also
+manually via **Actions → Auto-doc cleanup → Run workflow**). It reads the
+`CLAUDE.md` tree and the `docs/` guides those files link to, then opens one PR
+labeled `auto-doc` with tidy-ups. It never edits code, tests, or config, and it
+never merges. If there's nothing worth changing, it opens no PR.
+
+**A middle setting, not aggressive.** It resolves contradictions, cuts genuine
+bloat and obsolete rules, and tightens wording for the agents that read these
+files. It deliberately keeps duplication that earns its place — a rule repeated
+where an agent needs it, so it doesn't have to load another file, is good
+context locality, not bloat. It never changes what a rule means; a substantive
+conflict it can't resolve is surfaced in the PR body for a human, not silently
+decided.
+
+**Reviewing it.** Whoever you name in `reviewers` is requested on the PR. It
+carries an inline comment on each non-trivial change explaining why. Keep what
+you like and merge, push edits, or reply on a comment to steer the next run. (A
+planned follow-up will let a 👎 on a comment revert just that change
+automatically. GitHub fires no workflow event on a reaction, so that step will
+be driven by a scheduled poll or a reply, not the reaction itself.) Because the
+PR is labeled `auto-doc`, the extractor and integrator skip it, so reviewing or
+merging it never feeds the loop.
 
 `respond.yml` takes only `auto-doc-ref`; it derives the PR, its branches, and the
 triggering comment from the event.
@@ -296,6 +355,16 @@ comment on pull requests too, so this does hand a read-only member a path to
 writes they don't otherwise have. **Don't run this on a public repo** without
 narrowing `claude_args` first; there, anyone can open a PR and comment.
 
+**The cleanup agent (`cleanup.yml`) holds the same write-scoped token and Bash
+tools**, and its documentation-only allowlist is likewise prompt-enforced, not
+mechanical. Its injection surface is narrower than the integrator's, though: it
+reads only already-merged `CLAUDE.md` / `docs/**` content, so a malicious payload
+must first pass review and merge (closer to an insider or compromised-reviewer
+scenario) rather than arriving in a live PR comment. It also takes no
+user-supplied input from its trigger (schedule / manual dispatch). Same rule
+applies: private repos until the mechanics move out of the agent
+([#2](https://github.com/momentumdash/auto-doc/issues/2)).
+
 **The responder (`respond.yml`) holds the same write-scoped token and Bash
 tools**, and acts on comment text a human writes on a doc PR, so its
 documentation-only allowlist is again prompt-enforced, not mechanical. Its
@@ -310,7 +379,8 @@ ask for an edit, not just propose one.
 - Only a review's **inline** comments are classified, not the review's top-level
   summary body. State rules inline or use `/document`.
 - Repos using `AGENTS.md` instead of `CLAUDE.md` aren't supported yet — the
-  allowlist and reply text both assume `CLAUDE.md`.
+  allowlist, reply text, and the cleanup agent's file inventory all assume
+  `CLAUDE.md`.
 
 ## Releasing
 
@@ -363,6 +433,6 @@ npm run eval      # classifier eval against real model calls; needs ANTHROPIC_AP
 
 `extract.js` is the entrypoint for all three extract triggers; it reads the
 event from `GITHUB_EVENT_PATH`. `classify.js` holds the classifier prompt and
-schema, `github-comments.js` the `gh` mechanics, `prompts.js` the integrator
-prompt. Ported out of `momentumdash/extension`, where it ran as two repo-local
-workflows.
+schema, `github-comments.js` the `gh` mechanics, `prompts.js` the integrator,
+cleanup, and responder prompts. Ported out of `momentumdash/extension`, where it
+ran as two repo-local workflows.
