@@ -1,5 +1,5 @@
 /* global process */
-import { integratorPrompt } from './prompts.js'
+import { integratorPrompt, respondPrompt } from './prompts.js'
 
 const which = process.argv[2]
 const env = process.env
@@ -8,6 +8,8 @@ function fail(message) {
 	console.error(`build-prompt: ${message}`)
 	process.exit(1)
 }
+
+const ignoreAuthors = (env.AUTO_DOC_IGNORE_AUTHORS || '').split(',').map(s => s.trim()).filter(Boolean)
 
 if (which === 'integrate') {
 	process.stdout.write(
@@ -25,12 +27,27 @@ if (which === 'integrate') {
 			docStyleFile: env.DOC_STYLE_FILE || 'docs/writing-docs.md',
 			// Automation logins whose 👍/👎 must not count as human validation —
 			// same denylist the extractor applies to comments (see extract.yml).
-			ignoreAuthors: (env.AUTO_DOC_IGNORE_AUTHORS || '').split(',').map(s => s.trim()).filter(Boolean),
+			ignoreAuthors,
+		})
+	)
+} else if (which === 'respond') {
+	process.stdout.write(
+		respondPrompt({
+			repoOwner: env.REPO_OWNER || '',
+			repoName: env.REPO_NAME || '',
+			prNumber: env.PR_NUMBER || fail('PR_NUMBER is required'),
+			eventName: env.EVENT_NAME || fail('EVENT_NAME is required'),
+			// Exactly one of these is set, depending on the event: a review id for
+			// a submitted review, else the single comment's id.
+			reviewId: env.REVIEW_ID || '',
+			commentId: env.COMMENT_ID || '',
+			// Automation logins to skip, beyond the structural non-bot guard.
+			ignoreAuthors,
 		})
 	)
 } else {
-	// The extractor is now a direct SDK classifier (extract.js); only the
-	// merge-time integrator still builds a claude-code-action prompt.
-	console.error(`build-prompt: expected 'integrate', got: ${which}`)
+	// The extractor is a direct SDK classifier (extract.js); the integrator and
+	// the feedback responder build claude-code-action prompts.
+	console.error(`build-prompt: expected 'integrate' or 'respond', got: ${which}`)
 	process.exit(1)
 }
