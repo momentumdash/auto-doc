@@ -6,6 +6,8 @@ import {
 	deleteReply,
 	editReply,
 	fetchBotReplies,
+	ignoredAuthorLogins,
+	isIgnoredAuthor,
 	listReviewComments,
 	lookupReply,
 	postReply,
@@ -16,6 +18,7 @@ const eventName = process.env.GITHUB_EVENT_NAME
 const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf-8'))
 const repoOwner = event.repository.owner.login
 const repoName = event.repository.name
+const ignoredAuthors = ignoredAuthorLogins()
 
 const hasAutoDocLabel = labels => Array.isArray(labels) && labels.some(l => l.name === 'auto-doc')
 
@@ -40,23 +43,24 @@ async function processCandidate(cand, common, replies) {
 		return
 	}
 
-	let result = await classifyComment({
-		body: cand.body,
-		filePath: cand.filePath,
-		line: cand.line,
-		prTitle: common.prTitle,
-		prNumber: common.prNumber,
-		isLineAnchored: cand.isLineAnchored,
-		sourceCommentId: cand.id,
-		manualMarker: markers.manualMarker,
-		providedRuleText: markers.providedRuleText,
-	})
-
-	// Explicit /document <text>: honor the reviewer's wording verbatim and force
-	// capture, regardless of the model's verdict. Use the model's scope if we
-	// got one, else repo root.
+	// Explicit /document <text>: the rule text is supplied, so honor it verbatim
+	// and skip the classifier entirely — a call here would be discarded in full.
+	// Otherwise classify the comment (manualMarker /document with no text still
+	// needs the model to extract a clean rule).
+	let result
 	if (markers.providedRuleText) {
-		result = { isRule: true, scope: result?.scope ?? '', rule: markers.providedRuleText, why: '' }
+		result = { isRule: true, rule: markers.providedRuleText }
+	} else {
+		result = await classifyComment({
+			body: cand.body,
+			filePath: cand.filePath,
+			line: cand.line,
+			prTitle: common.prTitle,
+			prNumber: common.prNumber,
+			isLineAnchored: cand.isLineAnchored,
+			sourceCommentId: cand.id,
+			manualMarker: markers.manualMarker,
+		})
 	}
 
 	// null = classification could not be completed (API error / refusal /
@@ -76,7 +80,7 @@ async function processCandidate(cand, common, replies) {
 	}
 
 	const replyBodyFor = supersedesUrl =>
-		buildReplyBody({ sourceCommentId: cand.id, scope: result.scope, rule: result.rule, supersedesUrl })
+		buildReplyBody({ sourceCommentId: cand.id, rule: result.rule, supersedesUrl })
 
 	if (!existing) {
 		const url = postReply({ ...target, prNumber: common.prNumber, sourceCommentId: cand.id, body: replyBodyFor() })
@@ -102,7 +106,7 @@ async function processCandidate(cand, common, replies) {
 
 function gather() {
 	if (eventName === 'pull_request_review') {
-		if (event.review.user?.type === 'Bot') return null
+		if (isIgnoredAuthor(event.review.user, ignoredAuthors)) return null
 		if (hasAutoDocLabel(event.pull_request.labels)) return null
 		const common = { prNumber: event.pull_request.number, prTitle: event.pull_request.title }
 		// Known limitation: only the review's inline comments are classified, not
@@ -110,7 +114,7 @@ function gather() {
 		// the summary aren't captured — flag them inline or via /document instead.
 		const inline = listReviewComments({ repoOwner, repoName, prNumber: common.prNumber, reviewId: event.review.id })
 		const candidates = inline
-			.filter(c => c.user?.type !== 'Bot')
+			.filter(c => !isIgnoredAuthor(c.user, ignoredAuthors))
 			.map(c => ({
 				id: c.id,
 				body: c.body || '',
@@ -121,14 +125,14 @@ function gather() {
 		return { common, candidates }
 	}
 	if (eventName === 'issue_comment') {
-		if (event.comment.user?.type === 'Bot') return null
+		if (isIgnoredAuthor(event.comment.user, ignoredAuthors)) return null
 		if (!event.issue?.pull_request) return null // a plain issue, not a PR
 		if (hasAutoDocLabel(event.issue.labels)) return null
 		const common = { prNumber: event.issue.number, prTitle: event.issue.title }
 		return { common, candidates: [{ id: event.comment.id, body: event.comment.body || '', isLineAnchored: false }] }
 	}
 	if (eventName === 'pull_request_review_comment') {
-		if (event.comment.user?.type === 'Bot') return null
+		if (isIgnoredAuthor(event.comment.user, ignoredAuthors)) return null
 		if (hasAutoDocLabel(event.pull_request.labels)) return null
 		const common = { prNumber: event.pull_request.number, prTitle: event.pull_request.title }
 		const c = event.comment

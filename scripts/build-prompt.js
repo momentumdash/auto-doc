@@ -25,6 +25,9 @@ if (which === 'integrate') {
 			// branch name that may not exist in the calling repo.
 			baseBranch: env.BASE_BRANCH || fail('BASE_BRANCH is required'),
 			docStyleFile: env.DOC_STYLE_FILE || 'docs/writing-docs.md',
+			// Automation logins whose 👍/👎 must not count as human validation —
+			// same denylist the extractor applies to comments (see extract.yml).
+			ignoreAuthors,
 		})
 	)
 } else if (which === 'respond') {

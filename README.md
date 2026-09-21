@@ -133,7 +133,7 @@ to auto-doc, though other workflows in the repo may still need them.
 
 ## Secrets and variables
 
-Set these at the org level so new repos need nothing but the two workflow files.
+Set these at the org level so new repos need nothing but the workflow files.
 
 | Name | Kind | Required | Purpose |
 | --- | --- | --- | --- |
@@ -143,7 +143,7 @@ Set these at the org level so new repos need nothing but the two workflow files.
 | `AUTO_DOC_APP_PRIVATE_KEY` | secret | no | GitHub App private key (PEM). |
 | `AUTO_DOC_USE_APP` | variable | no | `'true'` to mint an App token instead of using `GITHUB_TOKEN`. |
 | `AUTO_DOC_BASE_BRANCH` | variable | no | Branch doc PRs target. Defaults to the repo's default branch. |
-| `AUTO_DOC_IGNORE_AUTHORS` | variable | no | Comma-separated automation logins `respond.yml` skips, beyond bot accounts. |
+| `AUTO_DOC_IGNORE_AUTHORS` | variable | no | Comma-separated automation logins the bot skips: never classified by the extractor, never counted in the integrator's reaction gate, and skipped by `respond.yml`, beyond bot accounts. See [Ignored authors](#ignored-authors). |
 
 Without a GitHub App the bot posts as `github-actions[bot]`, and **doc PRs it
 opens won't trigger CI** — GitHub suppresses workflow events from
@@ -221,21 +221,46 @@ none of this feeds the extractor or integrator.
 | In a comment | Effect |
 | --- | --- |
 | `/document` | Force capture — treated as high-confidence even if the classifier would have passed. |
-| `/document <text>` | Capture `<text>` verbatim as the rule; the classifier only picks the scope. |
+| `/document <text>` | Capture `<text>` verbatim as the rule, bypassing the classifier's verdict. |
 | `/dontdocument` | Suppress. Deletes any existing bot reply, and never calls the model. |
 
 Editing a comment reclassifies it. If the existing bot reply already has a 👍 or
 👎, it's left alone and a new superseding reply is posted — a reaction approved
 a specific wording, so it never silently transfers to different text.
 
-## Scope allowlist
+## What gets captured
 
-The proposed scope comes from user-written comments, so the integrator resolves
-it and is instructed to write only to `CLAUDE.md`, a nested `**/CLAUDE.md`, or a
-`docs/**/*.md` guide. Anything else — absolute paths, `..` traversal, shell text
-— is dropped and noted in the doc PR body. This allowlist lives in the prompt,
-not in code; see [Security model](#security-model) for what that does and
-doesn't guarantee.
+The classifier optimizes for **precision**: it captures a comment only when it
+states a **wide-area** rule — a reusable convention that will recur across many
+files or PRs, the kind a new contributor needs to know before touching code they
+haven't seen. Narrow feedback (a fix for one line, a one-off nitpick, "simplify
+this branch") is deliberately dropped; a stream of marginal proposals just trains
+reviewers to ignore the bot. A rule the classifier misses can always be restated
+or forced with `/document`.
+
+`scripts/eval.js` is a labeled eval that guards this bar from regressing (run
+`cd scripts && ANTHROPIC_API_KEY=… npm run eval`; it skips without a key).
+
+## Ignored authors
+
+Comments from GitHub App bots (`coderabbitai`, `github-actions`, …) are skipped
+automatically — they carry `user.type == "Bot"`. A bot backed by a plain user
+account (a PAT or machine user) does not, so list those logins in the
+`AUTO_DOC_IGNORE_AUTHORS` repo/org variable (comma-separated, case-insensitive)
+and their comments are never classified. The same variable also gates the
+merge-time reaction check: a 👍 or 👎 from a bot account or a denylisted login
+counts as neither approval nor veto, so a bot can't cast the deciding vote.
+
+## The rule's documentation home
+
+The extractor never proposes a target file: it only sees the diff, so guessing
+one is never reliable. The merge-time integrator, which can read the whole repo's
+doc tree, decides where each approved rule belongs. It is
+instructed to write only to `CLAUDE.md`, a nested `**/CLAUDE.md`, or a
+`docs/**/*.md` guide; anything it derives outside that — absolute paths, `..`
+traversal, or a path carrying shell/command text — is dropped and noted in the
+doc PR body. This allowlist lives in the prompt, not in code; see
+[Security model](#security-model) for what that does and doesn't guarantee.
 
 ## Security model
 
@@ -332,6 +357,8 @@ Docs-only changes don't need any of this: the README isn't read at run time.
 
 ```sh
 cd scripts && npm ci
+npm test          # offline checks: reply sanitization + author denylist
+npm run eval      # classifier eval against real model calls; needs ANTHROPIC_API_KEY, skips without one
 ```
 
 `extract.js` is the entrypoint for all three extract triggers; it reads the
