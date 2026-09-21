@@ -77,6 +77,7 @@ jobs:
           ACTOR: ${{ github.event.review.user.login || github.event.comment.user.login }}
           DENYLIST: ${{ vars.AUTO_DOC_IGNORE_AUTHORS }}
         run: |
+          # shellcheck disable=SC2153  # ACTOR and DENYLIST come from the env: block above
           actor="$(printf '%s' "$ACTOR" | tr '[:upper:]' '[:lower:]')"
           denied=false
           IFS=',' read -ra names <<< "$DENYLIST"
