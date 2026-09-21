@@ -1,0 +1,45 @@
+# CI for auto-doc's own PRs. The extract/integrate/respond workflows are
+# reusable (workflow_call) and never run on this repo's own pushes, so without
+# this nothing validates the workflows or the scripts before merge.
+#
+# No `npm ci`: the checks below don't import the Anthropic SDK at runtime
+# (`node --check` only parses; the offline suite and the prompt builders import
+# only local modules and Node builtins). Add an install step if that changes.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Lint workflows (actionlint + shellcheck on run steps)
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+        run: |
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" | tar xz actionlint
+          ./actionlint -color .github/workflows/*.yml examples/*.yml
+
+      - name: Syntax-check scripts
+        working-directory: scripts
+        run: for f in *.js; do node --check "$f"; done
+
+      - name: Offline tests + prompt render smoke
+        working-directory: scripts
+        run: node test.js

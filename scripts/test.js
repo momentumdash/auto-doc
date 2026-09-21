@@ -4,6 +4,7 @@
 // markdown a human is asked to approve) and the author denylist. Run with:
 // node test.js
 import assert from 'node:assert'
+import { execFileSync } from 'node:child_process'
 import { BOT_MARKER_PREFIX, buildReplyBody, botMarker, ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
 import { integratorPrompt } from './prompts.js'
 
@@ -68,6 +69,28 @@ const ungated = integratorPrompt({ prNumber: 1, repoOwner: 'o', repoName: 'r', b
 assert.doesNotMatch(ungated, /automation accounts/)
 assert.doesNotMatch(ungated, /automation logins named above/)
 assert.match(ungated, /at least one `\+1` reaction from a user whose `user\.type != "Bot"`, AND/)
+
+// --- build-prompt.js CLI render smoke --------------------------------------
+// Each mode must render a non-empty prompt, and an unknown mode or a missing
+// required arg must fail fast (non-zero exit), so broken CLI wiring is caught.
+const runBuild = (args, env = {}) =>
+	execFileSync('node', ['build-prompt.js', ...args], {
+		cwd: import.meta.dirname,
+		env: { ...process.env, ...env },
+		encoding: 'utf-8',
+		stdio: ['ignore', 'pipe', 'ignore'], // capture stdout; drop the child's stderr
+	})
+
+assert.match(
+	runBuild(['integrate'], { PR_NUMBER: '1', REPO_OWNER: 'o', REPO_NAME: 'r', BASE_BRANCH: 'main' }),
+	/merge-time integrator/
+)
+assert.match(
+	runBuild(['respond'], { PR_NUMBER: '1', REPO_OWNER: 'o', REPO_NAME: 'r', EVENT_NAME: 'issue_comment', COMMENT_ID: '5' }),
+	/feedback responder/
+)
+assert.throws(() => runBuild(['bogus']), 'unknown mode must exit non-zero')
+assert.throws(() => runBuild(['respond'], { REPO_OWNER: 'o', REPO_NAME: 'r' }), 'respond without PR_NUMBER must exit non-zero')
 
 console.log('ok — all offline checks passed')
 process.exit(0)
