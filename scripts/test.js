@@ -123,9 +123,9 @@ assert.throws(() => verdict(execFile), err => /^::error::denied Bash: gh pr view
 assert.throws(() => verdict(path.join(verdictDir, 'missing.json')), err => /no readable execution file/.test(err.stdout))
 // A denied command is agent-controlled: a newline in it must not start a
 // second workflow command.
-fs.writeFileSync(execFile, JSON.stringify(result([{ tool_name: 'Bash', tool_input: { command: 'gh pr view 1\n::warning::injected 100%' } }])))
+fs.writeFileSync(execFile, JSON.stringify(result([{ tool_name: 'Bash', tool_input: { command: 'gh pr view 1\r\n::warning::injected 100%' } }])))
 assert.throws(() => verdict(execFile), err =>
-	err.stdout === '::error::denied Bash: gh pr view 1%0A::warning::injected 100%25\n'
+	err.stdout === '::error::denied Bash: gh pr view 1%0D%0A::warning::injected 100%25\n'
 )
 fs.writeFileSync(execFile, '{}')
 assert.throws(() => verdict(execFile), err => /no readable execution file/.test(err.stdout))
@@ -168,13 +168,24 @@ const prompts = {
 	'respond (review)': respondPrompt({ ...ctx, eventName: 'pull_request_review' }),
 	'respond (comment)': respondPrompt({ ...ctx, eventName: 'issue_comment' }),
 }
-const DENIED_SHELL = [/\$\(/, /"\$/, /\$[A-Za-z_{]/, / >>? /, />>?\//, /<</]
+// Redirects with or without spaces (not 2>&1, ->, =>), heredocs, process
+// substitution, ANSI-C quoting, and tee.
+const DENIED_SHELL = [/\$\(/, /"\$/, /\$[A-Za-z_{']/, / >>? /, /(^|[^-=<\s])\s*>>?(?!&)\S/, /<</, /<\(/, /\|\s*tee\b/]
 for (const [name, text] of Object.entries(prompts)) {
 	assert.ok(text.includes(SHELL_RULES), `${name}: missing the shell rules`)
 	text.replace(SHELL_RULES, '').split('\n').forEach((line, n) => {
 		const code = line.replace(/<[^<>\s!][^<>]*>/g, 'X') // <placeholder>s aren't shell
 		for (const re of DENIED_SHELL) assert.doesNotMatch(code, re, `${name} line ${n + 1} uses a denied shell construct: ${line.trim()}`)
 	})
+	// A quoted argument spanning lines is denied when a line in it starts with
+	// `#`, so bodies are either one line or a --body-file.
+	assert.doesNotMatch(text, /(--body |body=)'[^']*\n/, `${name} passes a multi-line body inline`)
+}
+for (const name of ['integrate', 'cleanup']) {
+	const creates = prompts[name].match(/^\s+gh pr create(?:[^\n]*\\\n)*[^\n]*/gm)
+	assert.ok(creates?.length, `${name}: no gh pr create found`)
+	for (const c of creates) assert.match(c, /--body-file \/tmp\//, `${name}: gh pr create must pass --body-file: ${c}`)
+	assert.doesNotMatch(prompts[name], /--body '/, `${name}: PR bodies go through --body-file`)
 }
 
 // --- build-prompt.js CLI render smoke --------------------------------------
