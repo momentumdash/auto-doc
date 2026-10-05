@@ -14,6 +14,10 @@ Four workflows:
 | `cleanup.yml` | weekly schedule | Tidies the CLAUDE.md tree and the guides it links to (contradictions, bloat, drift), opens one doc PR, and comments inline on each change. See [Weekly cleanup](#weekly-cleanup). |
 | `respond.yml` | comment / review on an auto-doc PR | Acts on a human's feedback on a doc PR the bot opened: reverts a change, applies a requested edit, or replies. See [Responding to feedback](#responding-to-feedback). |
 
+The integrator, cleanup, and responder run an agent with a narrow tool
+allowlist. Any tool call the allowlist denies fails the run, so a blocked agent
+shows up red instead of quietly doing nothing.
+
 Reactions are the only validation surface — the integrator never reads comment
 text for sentiment. A single 👎 from any non-bot user overrides any number of 👍s.
 
@@ -227,7 +231,8 @@ if you pin a SHA instead of the floating `v1` tag.
 manually via **Actions → Auto-doc cleanup → Run workflow**). It reads the
 `CLAUDE.md` tree and the `docs/` guides those files link to, then opens one PR
 labeled `auto-doc` with tidy-ups. It never edits code, tests, or config, and it
-never merges. If there's nothing worth changing, it opens no PR.
+never merges. If there's nothing worth changing, it opens no PR. If the agent
+is denied any tool call, the run fails and records nothing.
 
 **Skips unchanged weeks.** After each successful run, manual ones included, the
 workflow records the base-branch commit it reviewed at `refs/auto-doc/cleanup`,
@@ -284,10 +289,15 @@ checkout needed. It fires on two events:
 It reacts 👀 on your comment as soon as the job starts, and replies to every
 item when it's done, so you get a notification either way.
 
-It only acts on comments from the repo's owners, members, and collaborators.
+The 👀 is best effort: if the reaction fails, the response still runs. When
+you don't see it:
 
-When you don't see the 👀:
-
+- **You aren't an owner, member, or collaborator** as GitHub sees it. That
+  includes org members whose membership is private, whom GitHub reports as
+  `CONTRIBUTOR` or `NONE`. Make your membership public or ask to be added as a
+  collaborator.
+- **The PR has no `auto-doc` label**, or **your login is in
+  `AUTO_DOC_IGNORE_AUTHORS`**. The job skips both.
 - **The PR has merge conflicts.** GitHub fires no `pull_request_review` event
   then, so inline comments are never seen. Comment at the top level instead.
 - **The comment was made through the REST API.** That fires only

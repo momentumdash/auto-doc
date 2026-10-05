@@ -6,6 +6,10 @@
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
+// GitHub's workflow-command escaping, so a denied command can't end its own
+// ::error:: line and inject another workflow command.
+const escapeData = s => s.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')
+
 /** One line per denied call: the tool plus its command or file, capped. */
 export function deniedCalls(messages) {
 	const result = messages.findLast(m => m?.type === 'result')
@@ -24,6 +28,6 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
 	} catch {
 		denied = ['no readable execution file from the agent']
 	}
-	for (const line of denied) console.log(`::error::${line}`)
+	for (const line of denied) console.log(`::error::${escapeData(line)}`)
 	if (denied.length) process.exit(1)
 }

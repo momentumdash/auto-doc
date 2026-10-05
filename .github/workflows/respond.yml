@@ -180,10 +180,11 @@ jobs:
           # space in `gh api` splits the pattern and neither rule is allowed.
           claude_args: '--allowed-tools "Bash(gh api:*),Bash(gh pr:*),Bash(git:*),Bash(find:*),Read,Edit,Write,Grep,Glob"'
 
-      # A fresh copy checked out after the agent, so it can't have edited the
-      # script that judges it. The execution file itself is still agent-writable;
-      # PRO-15023's tool-allowlist hardening is what closes that.
+      # A fresh copy checked out after the agent. This guards against accidental
+      # edits; a hostile agent can still tamper via Bash(git:*) (git -c alias,
+      # core.fsmonitor) and unrestricted Write until PRO-15023.
       - name: Checkout auto-doc for the result check
+        id: verdict_checkout
         if: ${{ steps.agent.outcome == 'success' }}
         uses: actions/checkout@v4
         with:
@@ -207,7 +208,10 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token || github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-          REASON: ${{ steps.check.outcome == 'failure' && 'the agent was denied a tool call' || steps.agent.outcome == 'failure' && 'the agent run failed' || 'a setup step failed' }}
+          REASON: >-
+            ${{ steps.check.outcome == 'failure' && 'the agent''s result check failed' ||
+            steps.verdict_checkout.outcome == 'failure' && 'the result check couldn''t start' ||
+            steps.agent.outcome == 'failure' && 'the agent run failed' || 'a setup step failed' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "auto-doc couldn't finish acting on this feedback: $REASON. Run: $RUN_URL"

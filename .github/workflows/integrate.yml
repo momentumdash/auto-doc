@@ -119,9 +119,9 @@ jobs:
           prompt: ${{ steps.build_prompt.outputs.prompt }}
           claude_args: '--allowed-tools Bash(gh:*),Bash(git:*),Bash(find:*),Read,Edit,Write,Grep,Glob'
 
-      # A fresh copy checked out after the agent, so it can't have edited the
-      # script that judges it. The execution file itself is still agent-writable;
-      # PRO-15023's tool-allowlist hardening is what closes that.
+      # A fresh copy checked out after the agent. This guards against accidental
+      # edits; a hostile agent can still tamper via Bash(git:*) (git -c alias,
+      # core.fsmonitor) and unrestricted Write until PRO-15023.
       - name: Checkout auto-doc for the result check
         if: ${{ steps.agent.outcome == 'success' }}
         uses: actions/checkout@v4
@@ -135,7 +135,6 @@ jobs:
       # The action ends green even when the agent was denied tools, so judge its
       # execution file before any later step treats the run as done.
       - name: Check agent result
-        id: check
         if: ${{ steps.agent.outcome == 'success' }}
         env:
           EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}

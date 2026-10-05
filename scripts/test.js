@@ -10,7 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { LAST_REVIEWED_REF, firstChangedCommit } from './cleanup-gate.js'
 import { BOT_MARKER_PREFIX, buildReplyBody, botMarker, ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
-import { cleanupPrompt, integratorPrompt, respondPrompt } from './prompts.js'
+import { SHELL_RULES, cleanupPrompt, integratorPrompt, respondPrompt } from './prompts.js'
 import { deniedCalls } from './agent-verdict.js'
 import { eyesTargets } from './respond-eyes.js'
 
@@ -83,6 +83,11 @@ assert.deepStrictEqual(
 	eyesTargets({ eventName: 'pull_request_review', review: { body: '', node_id: 'PRR_1' }, reviewComments: [{ id: 7 }] }),
 	[{ reviewCommentId: 7 }]
 )
+// A whitespace-only body renders as nothing, so it's treated as empty.
+assert.deepStrictEqual(
+	eyesTargets({ eventName: 'pull_request_review', review: { body: ' \n ', node_id: 'PRR_1' }, reviewComments: [{ id: 7 }] }),
+	[{ reviewCommentId: 7 }]
+)
 // A body-only review still gets 👀, on the review node itself.
 assert.deepStrictEqual(
 	eyesTargets({ eventName: 'pull_request_review', review: { body: 'lgtm', node_id: 'PRR_1' }, reviewComments: [] }),
@@ -116,6 +121,12 @@ fs.writeFileSync(execFile, JSON.stringify(result([{ tool_name: 'Bash', tool_inpu
 const verdict = file => execFileSync('node', [path.join(verdictDir, 'scripts', 'agent-verdict.js'), file], { encoding: 'utf-8' })
 assert.throws(() => verdict(execFile), err => /^::error::denied Bash: gh pr view 1$/m.test(err.stdout))
 assert.throws(() => verdict(path.join(verdictDir, 'missing.json')), err => /no readable execution file/.test(err.stdout))
+// A denied command is agent-controlled: a newline in it must not start a
+// second workflow command.
+fs.writeFileSync(execFile, JSON.stringify(result([{ tool_name: 'Bash', tool_input: { command: 'gh pr view 1\n::warning::injected 100%' } }])))
+assert.throws(() => verdict(execFile), err =>
+	err.stdout === '::error::denied Bash: gh pr view 1%0A::warning::injected 100%25\n'
+)
 fs.writeFileSync(execFile, '{}')
 assert.throws(() => verdict(execFile), err => /no readable execution file/.test(err.stdout))
 fs.writeFileSync(execFile, JSON.stringify(result([])))
@@ -145,11 +156,11 @@ for (const file of yamlFiles) {
 }
 assert.ok(allowlists >= 3, `expected the respond, cleanup, and integrate allowlists, found ${allowlists}`)
 
-// --- Prompt commands fit the Bash allowlist --------------------------------
+// --- Prompts fit the Bash allowlist ----------------------------------------
 // The allowlist matches each command as written, so shell variables, command
-// substitution, and writes to /tmp are denied, and a denial fails the run.
-// Scan only command text (indented lines and code spans starting with gh, git,
-// or find), so prose that names these constructs still passes.
+// substitution, and shell redirects or heredocs are denied, and a denial fails
+// the run. Scan the whole rendered prompt, minus the one paragraph that names
+// these constructs to forbid them.
 const ctx = { prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main', reviewers: ['dace'], reviewId: 9, commentId: 5 }
 const prompts = {
 	integrate: integratorPrompt(ctx),
@@ -157,13 +168,13 @@ const prompts = {
 	'respond (review)': respondPrompt({ ...ctx, eventName: 'pull_request_review' }),
 	'respond (comment)': respondPrompt({ ...ctx, eventName: 'issue_comment' }),
 }
+const DENIED_SHELL = [/\$\(/, /"\$/, /\$[A-Za-z_{]/, / >>? /, />>?\//, /<</]
 for (const [name, text] of Object.entries(prompts)) {
-	const commands = [
-		...text.split('\n').filter(l => /^\s+(gh|git|find|--|>)/.test(l)),
-		...[...text.matchAll(/`((?:gh|git|find) [^`]*)`/g)].map(m => m[1]),
-	]
-	assert.ok(commands.length > 5, `${name}: found too few commands to check (${commands.length})`)
-	for (const c of commands) assert.doesNotMatch(c, /\$\(|"\$|\$[A-Za-z_{]|>>? ?\/tmp|\/tmp\//, `${name} uses a denied shell construct: ${c.trim()}`)
+	assert.ok(text.includes(SHELL_RULES), `${name}: missing the shell rules`)
+	text.replace(SHELL_RULES, '').split('\n').forEach((line, n) => {
+		const code = line.replace(/<[^<>\s!][^<>]*>/g, 'X') // <placeholder>s aren't shell
+		for (const re of DENIED_SHELL) assert.doesNotMatch(code, re, `${name} line ${n + 1} uses a denied shell construct: ${line.trim()}`)
+	})
 }
 
 // --- build-prompt.js CLI render smoke --------------------------------------
