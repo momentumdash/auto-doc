@@ -230,6 +230,18 @@ manually via **Actions → Auto-doc cleanup → Run workflow**). It reads the
 labeled `auto-doc` with tidy-ups. It never edits code, tests, or config, and it
 never merges. If there's nothing worth changing, it opens no PR.
 
+**Skips unchanged weeks.** After each successful run, the workflow records the
+base-branch commit it reviewed at `refs/auto-doc/cleanup`, a hidden ref that
+branch and tag rulesets don't cover. A scheduled run compares the base branch
+against that ref and skips before the agent starts (no Claude tokens) when
+everything since was merged from auto-doc's own PRs, meaning PRs labeled
+`auto-doc` and opened by a bot. The skip reason and the commit it compared
+against appear in the run summary. A run with no recorded ref, or whose ref is
+no longer in the base branch's history, goes ahead. A failed run records
+nothing, so the next one reviews the same range again. A manual dispatch always
+runs. To force a full review on the next schedule, delete the ref:
+`git push origin :refs/auto-doc/cleanup`.
+
 **A middle setting, not aggressive.** It resolves contradictions, cuts genuine
 bloat and obsolete rules, and tightens wording for the agents that read these
 files. It deliberately keeps duplication that earns its place — a rule repeated

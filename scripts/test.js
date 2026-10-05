@@ -5,6 +5,10 @@
 // node test.js
 import assert from 'node:assert'
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { LAST_REVIEWED_REF, firstChangedCommit } from './cleanup-gate.js'
 import { BOT_MARKER_PREFIX, buildReplyBody, botMarker, ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
 import { integratorPrompt } from './prompts.js'
 
@@ -91,6 +95,68 @@ assert.match(
 )
 assert.throws(() => runBuild(['bogus']), 'unknown mode must exit non-zero')
 assert.throws(() => runBuild(['respond'], { REPO_OWNER: 'o', REPO_NAME: 'r' }), 'respond without PR_NUMBER must exit non-zero')
+
+// --- Cleanup skip gate -----------------------------------------------------
+// Shapes match the gate's `gh api .../commits/<sha>/pulls` projection. The
+// fixtures mirror real cases: a bot PR's merge commit authored by the human
+// who merged it (extension #6701), and a human commit that an open bot PR's
+// branch also contains (extension #6800), which must still count as a change.
+const botPr = (sha, labels = ['auto-doc']) => ({ merge_commit_sha: sha, user: { type: 'Bot' }, labels })
+const humanPr = sha => ({ merge_commit_sha: sha, user: { type: 'User' }, labels: [] })
+const prs = {
+	autoDocMerge: [botPr('autoDocMerge')],
+	humanMerge: [humanPr('humanMerge'), botPr('openBotPrTestMerge')],
+	unlabeledBot: [botPr('unlabeledBot', ['dependencies'])],
+	humanLabeled: [{ ...humanPr('humanLabeled'), labels: ['auto-doc'] }],
+	directPush: [],
+}
+const prsFor = sha => prs[sha]
+
+assert.strictEqual(firstChangedCommit(['autoDocMerge'], prsFor), null)
+assert.strictEqual(firstChangedCommit([], prsFor), null)
+assert.strictEqual(firstChangedCommit(['autoDocMerge', 'humanMerge'], prsFor), 'humanMerge')
+assert.strictEqual(firstChangedCommit(['unlabeledBot'], prsFor), 'unlabeledBot')
+assert.strictEqual(firstChangedCommit(['humanLabeled'], prsFor), 'humanLabeled')
+assert.strictEqual(firstChangedCommit(['directPush'], prsFor), 'directPush')
+
+// The CLI's git half, against a throwaway repo with a local bare "origin" so
+// there's no network: no recorded ref runs, an unchanged base skips, and a
+// recorded commit outside the base's history (rewritten) runs. None of these
+// reach the gh lookup, which only runs when commits sit between the two.
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-doc-gate-'))
+const work = path.join(tmp, 'work')
+const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: work, encoding: 'utf-8' }).trim()
+execFileSync('git', ['init', '-q', '--bare', path.join(tmp, 'origin.git')])
+execFileSync('git', ['init', '-q', '-b', 'main', work])
+git('remote', 'add', 'origin', path.join(tmp, 'origin.git'))
+git('commit', '-q', '--allow-empty', '-m', 'base')
+const gate = () => {
+	const out = path.join(tmp, 'out')
+	fs.writeFileSync(out, '')
+	const log = execFileSync('node', [path.join(import.meta.dirname, 'cleanup-gate.js')], {
+		cwd: work,
+		env: { ...process.env, BASE_BRANCH: 'main', GITHUB_OUTPUT: out, GITHUB_STEP_SUMMARY: path.join(tmp, 'summary') },
+		encoding: 'utf-8',
+	})
+	return { output: fs.readFileSync(out, 'utf-8'), log }
+}
+let decision = gate()
+assert.strictEqual(decision.output, 'skip=false\n')
+assert.match(decision.log, /no earlier cleanup recorded/)
+
+git('push', '-q', 'origin', `HEAD:${LAST_REVIEWED_REF}`)
+decision = gate()
+assert.strictEqual(decision.output, 'skip=true\n')
+assert.ok(decision.log.includes(`reviewed \`${git('rev-parse', 'HEAD')}\``))
+
+git('checkout', '-q', '--orphan', 'rewritten')
+git('commit', '-q', '--allow-empty', '-m', 'rewritten')
+git('push', '-q', '--force', 'origin', `HEAD:${LAST_REVIEWED_REF}`)
+git('checkout', '-q', 'main')
+decision = gate()
+assert.strictEqual(decision.output, 'skip=false\n')
+assert.match(decision.log, /not in `main`'s history/)
+fs.rmSync(tmp, { recursive: true, force: true })
 
 console.log('ok — all offline checks passed')
 process.exit(0)
