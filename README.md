@@ -14,6 +14,10 @@ Four workflows:
 | `cleanup.yml` | weekly schedule | Tidies the CLAUDE.md tree and the guides it links to (contradictions, bloat, drift), opens one doc PR, and comments inline on each change. See [Weekly cleanup](#weekly-cleanup). |
 | `respond.yml` | comment / review on an auto-doc PR | Acts on a human's feedback on a doc PR the bot opened: reverts a change, applies a requested edit, or replies. See [Responding to feedback](#responding-to-feedback). |
 
+The integrator, cleanup, and responder run an agent with a narrow tool
+allowlist. Any tool call the allowlist denies fails the run, so a blocked agent
+shows up red instead of quietly doing nothing.
+
 Reactions are the only validation surface — the integrator never reads comment
 text for sentiment. A single 👎 from any non-bot user overrides any number of 👍s.
 
@@ -122,7 +126,6 @@ jobs:
 name: Auto-doc respond
 on:
   pull_request_review: { types: [submitted] }
-  pull_request_review_comment: { types: [created] }
   issue_comment: { types: [created] }
 jobs:
   respond:
@@ -228,7 +231,29 @@ if you pin a SHA instead of the floating `v1` tag.
 manually via **Actions → Auto-doc cleanup → Run workflow**). It reads the
 `CLAUDE.md` tree and the `docs/` guides those files link to, then opens one PR
 labeled `auto-doc` with tidy-ups. It never edits code, tests, or config, and it
-never merges. If there's nothing worth changing, it opens no PR.
+never merges. If there's nothing worth changing, it opens no PR. If the agent
+is denied any tool call, the run fails and records nothing.
+
+**Skips unchanged weeks.** After each successful run, manual ones included, the
+workflow records the base-branch commit it reviewed at `refs/auto-doc/cleanup`,
+a hidden ref that branch and tag rulesets don't cover. A scheduled run compares
+the base branch against that ref and skips before the agent starts (no Claude
+tokens) when everything since was merged from cleanup PRs, meaning PRs labeled
+`auto-doc`, opened by a bot, from an `auto-doc/cleanup-*` branch. Integrator PRs
+(`auto-doc/pr-*`) count as changes, since they add rules no cleanup has tidied.
+The skip reason and the commit it compared against appear in the run summary.
+
+The gate errs toward running. It runs the cleanup when there is no recorded ref
+(so the first scheduled run after adopting this release is always a full run),
+when the ref is no longer in the base branch's history, and when the gate job
+fails for any reason short of cancellation (a GitHub API failure, a checkout
+failure, a missing script). A lookup error inside the gate shows as a `gate error`
+reason in the summary and a run-page warning. If the gate job died before it
+resolved the base commit, the cleanup still runs, but the record step then fails
+loudly rather than recording a ref. A failed run records nothing, so the next one
+runs again. A manual dispatch always
+runs, and its success resets the baseline. To force a full review on the next
+schedule, delete the ref: `git push origin :refs/auto-doc/cleanup`.
 
 **A middle setting, not aggressive.** It resolves contradictions, cuts genuine
 bloat and obsolete rules, and tightens wording for the agents that read these
@@ -253,13 +278,34 @@ triggering comment from the event.
 ## Responding to feedback
 
 Once a doc PR is open, `respond.yml` lets you steer it by commenting, no local
-checkout needed. It fires on three events
-and treats them the way GitHub groups them:
+checkout needed. It fires on two events:
 
-- a **submitted review** is handled as one batch (its inline comments ride in the
-  one `pull_request_review` event, so they don't each fire separately);
-- a **standalone inline comment** and a **top-level PR comment** each fire on
-  their own.
+- a **submitted review** is handled as one batch. GitHub fires
+  `pull_request_review` for every inline comment, a lone thread reply included,
+  so this covers all inline feedback. Don't also trigger on
+  `pull_request_review_comment`: it would run the same feedback twice.
+- a **top-level PR comment** fires on its own.
+
+It reacts 👀 on your comment as soon as the job starts, and replies to every
+item when it's done, so you get a notification either way.
+
+The 👀 is best effort: if the reaction fails, the response still runs. When
+you don't see it:
+
+- **You aren't an owner, member, or collaborator** as GitHub sees it. That
+  includes org members whose membership is private, whom GitHub reports as
+  `CONTRIBUTOR` or `NONE`. Make your membership public or ask to be added as a
+  collaborator.
+- **The PR has no `auto-doc` label**, or **your login is in
+  `AUTO_DOC_IGNORE_AUTHORS`**. The job skips both.
+- **The PR has merge conflicts.** GitHub fires no `pull_request_review` event
+  then, so inline comments are never seen. Comment at the top level instead.
+- **The comment was made through the REST API.** That fires only
+  `pull_request_review_comment`, which isn't handled. Comments made in the
+  GitHub UI are fine.
+- **Several comments landed at once.** Runs are serialized per PR, and GitHub
+  keeps only one pending run per group, so a comment whose run was dropped
+  gets no 👀 and no reply. Comment again.
 
 For each human comment it classifies the intent and acts on the PR's head branch:
 
@@ -268,11 +314,13 @@ For each human comment it classifies the intent and acts on the PR's head branch
 | "revert this" / "keep the original" on a diff hunk | Restores the base version of exactly that hunk, pushes, replies with the SHA, resolves the thread. |
 | "reword to X" / "call it Y" | Makes that edit, pushes, replies, resolves the thread. |
 | a question, or something too vague | Replies asking for the specific change; makes no edit, leaves the thread open. |
-| "lgtm" / thanks | Nothing. |
+| "lgtm" / thanks | Replies briefly; makes no edit. |
 
 It edits documentation only (same allowlist as the integrator) and never touches
-the base branch. **Loop safety**: the job runs only for non-bot authors, so the
-bot's own replies never re-trigger it. Because the PR keeps its `auto-doc` label,
+the base branch. If the agent errors or is denied a tool, the job goes red and
+posts a short comment on the PR linking the run. **Loop safety**: the job runs
+only for non-bot authors, so the bot's own reactions, replies, and failure
+comments never re-trigger it. Because the PR keeps its `auto-doc` label,
 none of this feeds the extractor or integrator.
 
 ## Reviewer controls

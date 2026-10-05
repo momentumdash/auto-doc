@@ -9,7 +9,7 @@ export const botMarker = sourceCommentId => `<!-- auto-doc-bot ref:${sourceComme
 
 // Thin wrapper around `gh api`. Args are passed as an array (execFileSync, no
 // shell) so nothing in them is interpreted by a shell.
-function gh(args) {
+export function gh(args) {
 	return execFileSync('gh', args, { encoding: 'utf-8' })
 }
 

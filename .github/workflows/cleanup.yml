@@ -7,6 +7,11 @@
 # can keep, drop, or adjust it. It never touches code, tests, or config, and it
 # never merges. If there's nothing worth changing it opens no PR.
 #
+# A scheduled run skips before the agent starts when nothing but cleanup PRs
+# has landed on the base branch since the last successful cleanup. The last
+# successful cleanup records the base commit it reviewed at
+# refs/auto-doc/cleanup. A manual dispatch always runs.
+#
 # See examples/auto-doc-cleanup.yml for the caller (schedule + manual dispatch).
 
 name: Auto-doc cleanup
@@ -54,8 +59,51 @@ concurrency:
   group: auto-doc-cleanup-${{ github.repository }}
   cancel-in-progress: false
 
+env:
+  BASE_BRANCH: ${{ inputs.base-branch || vars.AUTO_DOC_BASE_BRANCH || github.event.repository.default_branch }}
+
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      base-sha: ${{ steps.base.outputs.sha }}
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+          # History only: the gate walks commits and never reads file contents.
+          filter: blob:none
+
+      - name: Checkout auto-doc
+        uses: actions/checkout@v4
+        with:
+          repository: momentumdash/auto-doc
+          ref: ${{ inputs.auto-doc-ref }}
+          path: _auto-doc
+          fetch-depth: 1
+
+      # Resolved here, before the agent runs, so a commit that lands mid-run is
+      # still unreviewed next week.
+      - name: Resolve base commit
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if unchanged since the last cleanup
+        id: check
+        if: ${{ github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node _auto-doc/scripts/cleanup-gate.js
+
   cleanup:
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -98,7 +146,6 @@ jobs:
         env:
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
-          BASE_BRANCH: ${{ inputs.base-branch || vars.AUTO_DOC_BASE_BRANCH || github.event.repository.default_branch }}
           DOC_STYLE_FILE: ${{ inputs.doc-style-file }}
           REVIEWERS: ${{ inputs.reviewers || vars.AUTO_DOC_CLEANUP_REVIEWERS }}
         run: |
@@ -110,14 +157,48 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # Remove before the agent runs: it works inside this checkout and would
-      # otherwise sweep the vendored scripts into the cleanup branch.
+      # otherwise sweep the vendored scripts into the cleanup branch, and it
+      # must not be able to edit the verdict script that judges it.
       - name: Drop auto-doc checkout
         run: rm -rf _auto-doc
 
       - name: Run cleanup agent
+        id: agent
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.app_token.outputs.token || secrets.GITHUB_TOKEN }}
           prompt: ${{ steps.build_prompt.outputs.prompt }}
           claude_args: '--allowed-tools Bash(gh:*),Bash(git:*),Bash(find:*),Read,Edit,Write,Grep,Glob'
+
+      # A fresh copy checked out after the agent. This guards against accidental
+      # edits; a hostile agent can still tamper via Bash(git:*) (git -c alias,
+      # core.fsmonitor) and unrestricted Write until PRO-15023.
+      - name: Checkout auto-doc for the result check
+        if: ${{ steps.agent.outcome == 'success' }}
+        uses: actions/checkout@v4
+        with:
+          repository: momentumdash/auto-doc
+          ref: ${{ inputs.auto-doc-ref }}
+          path: _auto-doc
+          fetch-depth: 1
+          sparse-checkout: scripts
+
+      # The action ends green even when the agent was denied tools, so judge its
+      # execution file before any later step treats the run as done.
+      - name: Check agent result
+        if: ${{ steps.agent.outcome == 'success' }}
+        env:
+          EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
+        run: node _auto-doc/scripts/agent-verdict.js "$EXECUTION_FILE"
+
+      # Only after the agent succeeds, so a failed or cancelled run doesn't count
+      # as a review. A ref outside refs/heads and refs/tags: branch and tag
+      # rulesets don't cover it and it never shows up as a branch. Pushed with an
+      # explicit GITHUB_TOKEN URL so whatever git auth the agent step left behind
+      # doesn't matter.
+      - name: Record reviewed base commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.gate.outputs.base-sha }}
+        run: git -c http.https://github.com/.extraheader= push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${SHA:?}:refs/auto-doc/cleanup"
