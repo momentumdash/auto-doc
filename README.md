@@ -284,6 +284,19 @@ checkout needed. It fires on two events:
 It reacts 👀 on your comment as soon as the job starts, and replies to every
 item when it's done, so you get a notification either way.
 
+It only acts on comments from the repo's owners, members, and collaborators.
+
+When you don't see the 👀:
+
+- **The PR has merge conflicts.** GitHub fires no `pull_request_review` event
+  then, so inline comments are never seen. Comment at the top level instead.
+- **The comment was made through the REST API.** That fires only
+  `pull_request_review_comment`, which isn't handled. Comments made in the
+  GitHub UI are fine.
+- **Several comments landed at once.** Runs are serialized per PR, and GitHub
+  keeps only one pending run per group, so a comment whose run was dropped
+  gets no 👀 and no reply. Comment again.
+
 For each human comment it classifies the intent and acts on the PR's head branch:
 
 | You comment | It does |
