@@ -5,12 +5,11 @@
 name: Auto-doc respond
 
 on:
-  # A submitted review arrives as one event (its inline comments ride along);
-  # a standalone inline comment and a top-level comment each fire their own.
+  # Every inline comment, a lone thread reply included, fires
+  # pull_request_review, which batches a review's comments. Don't add
+  # pull_request_review_comment: it would run the same feedback twice.
   pull_request_review:
     types: [submitted]
-  pull_request_review_comment:
-    types: [created]
   issue_comment:
     types: [created]
 

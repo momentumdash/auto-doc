@@ -1,12 +1,16 @@
 /* global process */
-// Offline checks for the two pure pieces of the extractor: the sanitization in
-// buildReplyBody (where model output derived from an untrusted comment becomes
-// markdown a human is asked to approve) and the author denylist. Run with:
-// node test.js
+// Offline checks for the pure pieces of the extractor and responder: the
+// sanitization in buildReplyBody (where model output derived from an untrusted
+// comment becomes markdown a human is asked to approve), the author denylist,
+// and the responder's 👀 targets and run verdict. Run with: node test.js
 import assert from 'node:assert'
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { BOT_MARKER_PREFIX, buildReplyBody, botMarker, ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
 import { integratorPrompt } from './prompts.js'
+import { eyesTargets, runFailure } from './respond-status.js'
 
 const body = ({ rule = 'Use tabs.', supersedesUrl } = {}) =>
 	buildReplyBody({ sourceCommentId: 42, rule, supersedesUrl })
@@ -70,6 +74,49 @@ assert.doesNotMatch(ungated, /automation accounts/)
 assert.doesNotMatch(ungated, /automation logins named above/)
 assert.match(ungated, /at least one `\+1` reaction from a user whose `user\.type != "Bot"`, AND/)
 
+// --- Responder 👀 targets --------------------------------------------------
+assert.deepStrictEqual(eyesTargets({ eventName: 'issue_comment', commentId: '5' }), [{ issueCommentId: '5' }])
+// A lone thread reply arrives as an empty-body review: react on the reply only.
+assert.deepStrictEqual(
+	eyesTargets({ eventName: 'pull_request_review', reviewBody: '', reviewNodeId: 'PRR_1', reviewComments: [{ id: 7 }] }),
+	[{ reviewCommentId: 7 }]
+)
+// A body-only review still gets 👀, on the review node itself.
+assert.deepStrictEqual(
+	eyesTargets({ eventName: 'pull_request_review', reviewBody: 'lgtm', reviewNodeId: 'PRR_1', reviewComments: [] }),
+	[{ reviewNodeId: 'PRR_1' }]
+)
+assert.deepStrictEqual(
+	eyesTargets({ eventName: 'pull_request_review', reviewBody: 'see inline', reviewNodeId: 'PRR_1', reviewComments: [{ id: 7 }, { id: 8 }] }),
+	[{ reviewNodeId: 'PRR_1' }, { reviewCommentId: 7 }, { reviewCommentId: 8 }]
+)
+
+// --- Responder verdict -----------------------------------------------------
+const result = extra => [{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'success', is_error: false, permission_denials: [], ...extra }]
+assert.strictEqual(runFailure(result()), null)
+// The marketing-site#828 shape: the action reports success, the agent was blocked.
+assert.match(
+	runFailure(result({ permission_denials: [{ tool_name: 'Bash' }, { tool_name: 'Bash' }, { tool_name: 'Edit' }] })),
+	/3 tool call\(s\) denied: Bash, Edit/
+)
+assert.match(runFailure(result({ is_error: true })), /is_error/)
+assert.match(runFailure(result({ subtype: 'error_max_turns' })), /error_max_turns/)
+assert.match(runFailure([{ type: 'system', subtype: 'init' }]), /no result/)
+assert.match(runFailure(null), /no result/)
+
+// The CLI must fail closed, run through a symlinked path too: if it ever
+// skipped its own dispatch, `verdict` would exit 0 and hide the failure.
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-doc-test-'))
+fs.symlinkSync(import.meta.dirname, path.join(tmp, 'scripts'))
+const execFile = path.join(tmp, 'denied.json')
+fs.writeFileSync(execFile, JSON.stringify(result({ permission_denials: [{ tool_name: 'Bash' }] })))
+const verdict = file => execFileSync('node', [path.join(tmp, 'scripts', 'respond-status.js'), 'verdict', file], { encoding: 'utf-8' })
+assert.throws(() => verdict(execFile), err => /denied: Bash/.test(err.stdout))
+assert.throws(() => verdict(path.join(tmp, 'missing.json')), err => /no execution file/.test(err.stdout))
+fs.writeFileSync(execFile, JSON.stringify(result()))
+assert.strictEqual(verdict(execFile), '')
+fs.rmSync(tmp, { recursive: true })
+
 // --- build-prompt.js CLI render smoke --------------------------------------
 // Each mode must render a non-empty prompt, and an unknown mode or a missing
 // required arg must fail fast (non-zero exit), so broken CLI wiring is caught.
@@ -88,6 +135,11 @@ assert.match(
 assert.match(
 	runBuild(['respond'], { PR_NUMBER: '1', REPO_OWNER: 'o', REPO_NAME: 'r', EVENT_NAME: 'issue_comment', COMMENT_ID: '5' }),
 	/feedback responder/
+)
+// Every item gets a reply so the commenter is notified, "lgtm" included.
+assert.match(
+	runBuild(['respond'], { PR_NUMBER: '1', REPO_OWNER: 'o', REPO_NAME: 'r', EVENT_NAME: 'pull_request_review', REVIEW_ID: '9' }),
+	/NOOP — [^\n]*still reply/
 )
 assert.throws(() => runBuild(['bogus']), 'unknown mode must exit non-zero')
 assert.throws(() => runBuild(['respond'], { REPO_OWNER: 'o', REPO_NAME: 'r' }), 'respond without PR_NUMBER must exit non-zero')

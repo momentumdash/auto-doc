@@ -122,7 +122,6 @@ jobs:
 name: Auto-doc respond
 on:
   pull_request_review: { types: [submitted] }
-  pull_request_review_comment: { types: [created] }
   issue_comment: { types: [created] }
 jobs:
   respond:
@@ -253,13 +252,16 @@ triggering comment from the event.
 ## Responding to feedback
 
 Once a doc PR is open, `respond.yml` lets you steer it by commenting, no local
-checkout needed. It fires on three events
-and treats them the way GitHub groups them:
+checkout needed. It fires on two events:
 
-- a **submitted review** is handled as one batch (its inline comments ride in the
-  one `pull_request_review` event, so they don't each fire separately);
-- a **standalone inline comment** and a **top-level PR comment** each fire on
-  their own.
+- a **submitted review** is handled as one batch. GitHub fires
+  `pull_request_review` for every inline comment, a lone thread reply included,
+  so this covers all inline feedback. Don't also trigger on
+  `pull_request_review_comment`: it would run the same feedback twice.
+- a **top-level PR comment** fires on its own.
+
+It reacts 👀 on your comment as soon as the job starts, and replies to every
+item when it's done, so you get a notification either way.
 
 For each human comment it classifies the intent and acts on the PR's head branch:
 
@@ -268,11 +270,13 @@ For each human comment it classifies the intent and acts on the PR's head branch
 | "revert this" / "keep the original" on a diff hunk | Restores the base version of exactly that hunk, pushes, replies with the SHA, resolves the thread. |
 | "reword to X" / "call it Y" | Makes that edit, pushes, replies, resolves the thread. |
 | a question, or something too vague | Replies asking for the specific change; makes no edit, leaves the thread open. |
-| "lgtm" / thanks | Nothing. |
+| "lgtm" / thanks | Replies briefly; makes no edit. |
 
 It edits documentation only (same allowlist as the integrator) and never touches
-the base branch. **Loop safety**: the job runs only for non-bot authors, so the
-bot's own replies never re-trigger it. Because the PR keeps its `auto-doc` label,
+the base branch. If the agent errors or is denied a tool, the job goes red and
+posts a short comment on the PR linking the run. **Loop safety**: the job runs
+only for non-bot authors, so the bot's own reactions, replies, and failure
+comments never re-trigger it. Because the PR keeps its `auto-doc` label,
 none of this feeds the extractor or integrator.
 
 ## Reviewer controls
