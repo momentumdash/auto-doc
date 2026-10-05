@@ -165,7 +165,7 @@ Apply the policy above. Keep each change small and self-contained so a human can
      gh label create auto-doc --color C5DEF5 --description 'auto-doc PR; the auto-doc bot ignores it' 2>/dev/null || true
   c. Open the PR against \`${ctx.baseBranch}\` (NOT necessarily the repo default), labeled \`auto-doc\`, and capture its number from the URL \`gh pr create\` prints:
      pr_url=$(gh pr create --base ${ctx.baseBranch} --title 'Auto-doc: weekly docs cleanup' --body-file /tmp/auto-doc-cleanup-body.md --label auto-doc --head <branch-name>)
-     pr_number=$(basename "$pr_url")
+     pr_number=$(gh pr view "$pr_url" --json number --jq .number)
   d. PR body: a short summary of what you changed and why, plus a "Contradictions to reconcile" section for anything from Step 4 you deliberately left for a human. Write it to the file first for safe multi-line content.
 ${reviewerStep}
 ## Step 6 — Leave an inline comment on each non-trivial change
