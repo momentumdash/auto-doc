@@ -7,10 +7,10 @@
 # can keep, drop, or adjust it. It never touches code, tests, or config, and it
 # never merges. If there's nothing worth changing it opens no PR.
 #
-# A scheduled run skips before the agent starts when nothing but auto-doc's own
-# PRs has landed on the base branch since the last successful cleanup, whose
-# reviewed base commit it records at refs/auto-doc/cleanup. A manual dispatch
-# always runs.
+# A scheduled run skips before the agent starts when nothing but cleanup PRs
+# has landed on the base branch since the last successful cleanup. The last
+# successful cleanup records the base commit it reviewed at
+# refs/auto-doc/cleanup. A manual dispatch always runs.
 #
 # See examples/auto-doc-cleanup.yml for the caller (schedule + manual dispatch).
 
@@ -178,4 +178,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ needs.gate.outputs.base-sha }}
-        run: git -c http.https://github.com/.extraheader= push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$SHA:refs/auto-doc/cleanup"
+        run: git -c http.https://github.com/.extraheader= push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${SHA:?}:refs/auto-doc/cleanup"

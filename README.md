@@ -230,17 +230,22 @@ manually via **Actions → Auto-doc cleanup → Run workflow**). It reads the
 labeled `auto-doc` with tidy-ups. It never edits code, tests, or config, and it
 never merges. If there's nothing worth changing, it opens no PR.
 
-**Skips unchanged weeks.** After each successful run, the workflow records the
-base-branch commit it reviewed at `refs/auto-doc/cleanup`, a hidden ref that
-branch and tag rulesets don't cover. A scheduled run compares the base branch
-against that ref and skips before the agent starts (no Claude tokens) when
-everything since was merged from auto-doc's own PRs, meaning PRs labeled
-`auto-doc` and opened by a bot. The skip reason and the commit it compared
-against appear in the run summary. A run with no recorded ref, or whose ref is
-no longer in the base branch's history, goes ahead. A failed run records
-nothing, so the next one reviews the same range again. A manual dispatch always
-runs. To force a full review on the next schedule, delete the ref:
-`git push origin :refs/auto-doc/cleanup`.
+**Skips unchanged weeks.** After each successful run, manual ones included, the
+workflow records the base-branch commit it reviewed at `refs/auto-doc/cleanup`,
+a hidden ref that branch and tag rulesets don't cover. A scheduled run compares
+the base branch against that ref and skips before the agent starts (no Claude
+tokens) when everything since was merged from cleanup PRs, meaning PRs labeled
+`auto-doc`, opened by a bot, from an `auto-doc/cleanup-*` branch. Integrator PRs
+(`auto-doc/pr-*`) count as changes, since they add rules no cleanup has tidied.
+The skip reason and the commit it compared against appear in the run summary.
+
+The gate errs toward running. It runs the cleanup when there is no recorded ref
+(so the first scheduled run after adopting this release is always a full run),
+when the ref is no longer in the base branch's history, and when the gate itself
+errors (a GitHub API failure, say), with a `gate error` reason in the summary. A
+failed run records nothing, so the next one runs again. A manual dispatch always
+runs, and its success resets the baseline. To force a full review on the next
+schedule, delete the ref: `git push origin :refs/auto-doc/cleanup`.
 
 **A middle setting, not aggressive.** It resolves contradictions, cuts genuine
 bloat and obsolete rules, and tightens wording for the agents that read these

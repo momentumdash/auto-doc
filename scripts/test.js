@@ -101,12 +101,18 @@ assert.throws(() => runBuild(['respond'], { REPO_OWNER: 'o', REPO_NAME: 'r' }), 
 // fixtures mirror real cases: a bot PR's merge commit authored by the human
 // who merged it (extension #6701), and a human commit that an open bot PR's
 // branch also contains (extension #6800), which must still count as a change.
-const botPr = (sha, labels = ['auto-doc']) => ({ merge_commit_sha: sha, user: { type: 'Bot' }, labels })
-const humanPr = sha => ({ merge_commit_sha: sha, user: { type: 'User' }, labels: [] })
+const botPr = (sha, headRef = 'auto-doc/cleanup-2026-10-05', labels = ['auto-doc']) => ({
+	merge_commit_sha: sha,
+	head_ref: headRef,
+	user: { type: 'Bot' },
+	labels,
+})
+const humanPr = sha => ({ merge_commit_sha: sha, head_ref: 'feature/x', user: { type: 'User' }, labels: [] })
 const prs = {
 	autoDocMerge: [botPr('autoDocMerge')],
 	humanMerge: [humanPr('humanMerge'), botPr('openBotPrTestMerge')],
-	unlabeledBot: [botPr('unlabeledBot', ['dependencies'])],
+	integratorMerge: [botPr('integratorMerge', 'auto-doc/pr-7')],
+	unlabeledBot: [botPr('unlabeledBot', 'auto-doc/cleanup-2026-10-05', ['dependencies'])],
 	humanLabeled: [{ ...humanPr('humanLabeled'), labels: ['auto-doc'] }],
 	directPush: [],
 }
@@ -115,48 +121,108 @@ const prsFor = sha => prs[sha]
 assert.strictEqual(firstChangedCommit(['autoDocMerge'], prsFor), null)
 assert.strictEqual(firstChangedCommit([], prsFor), null)
 assert.strictEqual(firstChangedCommit(['autoDocMerge', 'humanMerge'], prsFor), 'humanMerge')
+assert.strictEqual(firstChangedCommit(['integratorMerge'], prsFor), 'integratorMerge')
 assert.strictEqual(firstChangedCommit(['unlabeledBot'], prsFor), 'unlabeledBot')
 assert.strictEqual(firstChangedCommit(['humanLabeled'], prsFor), 'humanLabeled')
 assert.strictEqual(firstChangedCommit(['directPush'], prsFor), 'directPush')
 
-// The CLI's git half, against a throwaway repo with a local bare "origin" so
-// there's no network: no recorded ref runs, an unchanged base skips, and a
-// recorded commit outside the base's history (rewritten) runs. None of these
-// reach the gh lookup, which only runs when commits sit between the two.
+// The CLI against a throwaway repo with a local bare "origin", and a stub `gh`
+// that serves the fixtures above (as already-projected jq output, so the jq
+// expression in cleanup-gate.js itself is only exercised against the real API).
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-doc-gate-'))
-const work = path.join(tmp, 'work')
-const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: work, encoding: 'utf-8' }).trim()
-execFileSync('git', ['init', '-q', '--bare', path.join(tmp, 'origin.git')])
-execFileSync('git', ['init', '-q', '-b', 'main', work])
-git('remote', 'add', 'origin', path.join(tmp, 'origin.git'))
-git('commit', '-q', '--allow-empty', '-m', 'base')
-const gate = () => {
-	const out = path.join(tmp, 'out')
-	fs.writeFileSync(out, '')
-	const log = execFileSync('node', [path.join(import.meta.dirname, 'cleanup-gate.js')], {
-		cwd: work,
-		env: { ...process.env, BASE_BRANCH: 'main', GITHUB_OUTPUT: out, GITHUB_STEP_SUMMARY: path.join(tmp, 'summary') },
-		encoding: 'utf-8',
-	})
-	return { output: fs.readFileSync(out, 'utf-8'), log }
+try {
+	const work = path.join(tmp, 'work')
+	const ghDir = path.join(tmp, 'bin')
+	const fixtures = path.join(tmp, 'fixtures')
+	fs.mkdirSync(ghDir)
+	fs.mkdirSync(fixtures)
+	fs.writeFileSync(
+		path.join(ghDir, 'gh'),
+		`#!/bin/sh
+[ -n "$GH_STUB_FAIL" ] && { echo 'API rate limit exceeded' >&2; exit 1; }
+cat "${fixtures}/$(basename "$(dirname "$3")")" 2>/dev/null || true
+`,
+		{ mode: 0o755 }
+	)
+	// Keeps the developer's global config (e.g. commit.gpgsign) out of the repo.
+	const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+	const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: work, env, encoding: 'utf-8' }).trim()
+	execFileSync('git', ['init', '-q', '--bare', path.join(tmp, 'origin.git')], { env })
+	execFileSync('git', ['init', '-q', '-b', 'main', work], { env })
+	git('remote', 'add', 'origin', path.join(tmp, 'origin.git'))
+	git('commit', '-q', '--allow-empty', '-m', 'base')
+	const commit = (message, pr) => {
+		git('commit', '-q', '--allow-empty', '-m', message)
+		const sha = git('rev-parse', 'HEAD')
+		if (pr) fs.writeFileSync(path.join(fixtures, sha), `${JSON.stringify({ ...pr, merge_commit_sha: sha })}\n`)
+		return sha
+	}
+	const gate = (extraEnv = {}) => {
+		const out = path.join(tmp, 'out')
+		fs.writeFileSync(out, '')
+		const log = execFileSync('node', [path.join(import.meta.dirname, 'cleanup-gate.js')], {
+			cwd: work,
+			env: {
+				...env,
+				PATH: `${ghDir}${path.delimiter}${process.env.PATH}`,
+				BASE_BRANCH: 'main',
+				GITHUB_REPOSITORY: 'o/r',
+				GITHUB_OUTPUT: out,
+				GITHUB_STEP_SUMMARY: path.join(tmp, 'summary'),
+				...extraEnv,
+			},
+			encoding: 'utf-8',
+			stdio: ['ignore', 'pipe', 'ignore'],
+		})
+		return { output: fs.readFileSync(out, 'utf-8'), log }
+	}
+
+	let decision = gate()
+	assert.strictEqual(decision.output, 'skip=false\n')
+	assert.match(decision.log, /no earlier cleanup recorded/)
+
+	git('push', '-q', 'origin', `HEAD:${LAST_REVIEWED_REF}`)
+	decision = gate()
+	assert.strictEqual(decision.output, 'skip=true\n')
+	assert.ok(decision.log.includes(`reviewed \`${git('rev-parse', 'HEAD')}\``))
+
+	// Commits between the ref and the tip: this is where gh and the range matter.
+	// A real merge, so the PR's branch commit is reachable but not first-parent.
+	git('checkout', '-q', '-b', 'auto-doc/cleanup-2026-10-05')
+	commit('Cleanup branch commit')
+	git('checkout', '-q', 'main')
+	git('merge', '-q', '--no-ff', '-m', 'Merge cleanup PR', 'auto-doc/cleanup-2026-10-05')
+	const cleanupMerge = git('rev-parse', 'HEAD')
+	fs.writeFileSync(path.join(fixtures, cleanupMerge), `${JSON.stringify(botPr(cleanupMerge))}\n`)
+	decision = gate()
+	assert.strictEqual(decision.output, 'skip=true\n')
+
+	const integratorMergeSha = commit('Merge integrator PR', botPr('', 'auto-doc/pr-7'))
+	decision = gate()
+	assert.strictEqual(decision.output, 'skip=false\n')
+	assert.ok(decision.log.includes(`\`${integratorMergeSha}\` landed`))
+
+	git('reset', '-q', '--hard', cleanupMerge)
+	const humanCommit = commit('Human commit')
+	decision = gate()
+	assert.strictEqual(decision.output, 'skip=false\n')
+	assert.ok(decision.log.includes(`\`${humanCommit}\` landed`))
+
+	// A lookup failure must run the cleanup, not fail the gate.
+	decision = gate({ GH_STUB_FAIL: '1' })
+	assert.strictEqual(decision.output, 'skip=false\n')
+	assert.match(decision.log, /gate error:/)
+
+	git('checkout', '-q', '--orphan', 'rewritten')
+	git('commit', '-q', '--allow-empty', '-m', 'rewritten')
+	git('push', '-q', '--force', 'origin', `HEAD:${LAST_REVIEWED_REF}`)
+	git('checkout', '-q', 'main')
+	decision = gate()
+	assert.strictEqual(decision.output, 'skip=false\n')
+	assert.match(decision.log, /not in `main`'s history/)
+} finally {
+	fs.rmSync(tmp, { recursive: true, force: true })
 }
-let decision = gate()
-assert.strictEqual(decision.output, 'skip=false\n')
-assert.match(decision.log, /no earlier cleanup recorded/)
-
-git('push', '-q', 'origin', `HEAD:${LAST_REVIEWED_REF}`)
-decision = gate()
-assert.strictEqual(decision.output, 'skip=true\n')
-assert.ok(decision.log.includes(`reviewed \`${git('rev-parse', 'HEAD')}\``))
-
-git('checkout', '-q', '--orphan', 'rewritten')
-git('commit', '-q', '--allow-empty', '-m', 'rewritten')
-git('push', '-q', '--force', 'origin', `HEAD:${LAST_REVIEWED_REF}`)
-git('checkout', '-q', 'main')
-decision = gate()
-assert.strictEqual(decision.output, 'skip=false\n')
-assert.match(decision.log, /not in `main`'s history/)
-fs.rmSync(tmp, { recursive: true, force: true })
 
 console.log('ok — all offline checks passed')
 process.exit(0)
