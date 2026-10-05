@@ -47,17 +47,21 @@ concurrency:
 
 jobs:
   respond:
-    # Only human comments on an auto-doc-labeled PR. The non-Bot check is the
-    # loop guard; the label check keeps this to the bot's own PRs.
+    # Only human comments on an auto-doc-labeled PR, from someone with write-ish
+    # standing on the repo. The non-Bot check is the loop guard; the
+    # association check fails closed before any secret is used; the label check
+    # keeps this to the bot's own PRs.
     if: >
       (github.event_name == 'pull_request_review' &&
         github.event.action == 'submitted' &&
         github.event.review.user.type != 'Bot' &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) &&
         contains(github.event.pull_request.labels.*.name, 'auto-doc')) ||
       (github.event_name == 'issue_comment' &&
         github.event.action == 'created' &&
         github.event.issue.pull_request != null &&
         github.event.comment.user.type != 'Bot' &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
         contains(github.event.issue.labels.*.name, 'auto-doc'))
     runs-on: ubuntu-latest
     permissions:
@@ -88,28 +92,6 @@ jobs:
           echo "denied=$denied" >> "$GITHUB_OUTPUT"
           if [ "$denied" = true ]; then echo "auto-doc: actor '$ACTOR' is denylisted; skipping."; fi
 
-      - name: Checkout calling repo
-        if: ${{ steps.guard.outputs.denied != 'true' }}
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Checkout auto-doc
-        if: ${{ steps.guard.outputs.denied != 'true' }}
-        uses: actions/checkout@v4
-        with:
-          repository: momentumdash/auto-doc
-          ref: ${{ inputs.auto-doc-ref }}
-          path: _auto-doc
-          fetch-depth: 1
-
-      # Out of the workspace before anything else: the responder works inside
-      # this checkout and would otherwise sweep the vendored scripts into the PR
-      # branch. The last step still needs them, so move rather than delete.
-      - name: Move auto-doc out of the workspace
-        if: ${{ steps.guard.outputs.denied != 'true' }}
-        run: mv _auto-doc "$RUNNER_TEMP/auto-doc"
-
       - name: Mint GitHub App token (optional, for dedicated bot identity)
         id: app_token
         if: ${{ vars.AUTO_DOC_USE_APP == 'true' && steps.guard.outputs.denied != 'true' }}
@@ -123,8 +105,22 @@ jobs:
           permission-pull-requests: write
           permission-issues: write
 
+      # Only the scripts, and before the calling repo: its checkout would wipe
+      # this directory, and 👀 should land within seconds.
+      - name: Checkout auto-doc scripts
+        if: ${{ steps.guard.outputs.denied != 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: momentumdash/auto-doc
+          ref: ${{ inputs.auto-doc-ref }}
+          path: _auto-doc
+          fetch-depth: 1
+          sparse-checkout: scripts
+
+      # Best effort: a failed reaction must never block the response itself.
       - name: React 👀 on the feedback
         if: ${{ steps.guard.outputs.denied != 'true' }}
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token || github.token }}
           REPO_OWNER: ${{ github.repository_owner }}
@@ -132,10 +128,8 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           EVENT_NAME: ${{ github.event_name }}
           REVIEW_ID: ${{ github.event.review.id }}
-          REVIEW_NODE_ID: ${{ github.event.review.node_id }}
-          REVIEW_BODY: ${{ github.event.review.body }}
           COMMENT_ID: ${{ github.event.comment.id }}
-        run: node "$RUNNER_TEMP/auto-doc/scripts/respond-eyes.js"
+        run: node _auto-doc/scripts/respond-eyes.js
 
       - name: Build responder prompt
         id: build_prompt
@@ -152,10 +146,23 @@ jobs:
         run: |
           {
             echo 'prompt<<__AUTO_DOC_EOF__'
-            node "$RUNNER_TEMP/auto-doc/scripts/build-prompt.js" respond
+            node _auto-doc/scripts/build-prompt.js respond
             echo
             echo '__AUTO_DOC_EOF__'
           } >> "$GITHUB_OUTPUT"
+
+      # Remove before the responder runs: it works inside this checkout and would
+      # otherwise sweep the vendored scripts into the PR branch, and it must not
+      # be able to edit the verdict script that judges it.
+      - name: Drop auto-doc checkout
+        if: ${{ steps.guard.outputs.denied != 'true' }}
+        run: rm -rf _auto-doc
+
+      - name: Checkout calling repo
+        if: ${{ steps.guard.outputs.denied != 'true' }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Run responder
         id: agent
@@ -165,27 +172,42 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.app_token.outputs.token || secrets.GITHUB_TOKEN }}
           prompt: ${{ steps.build_prompt.outputs.prompt }}
-          # gh narrowed to api + pr (no secret/repo/workflow/auth); the prompt
-          # further forbids merge, force-push, and settings/secret changes. This
-          # surface fires on every comment, so it is tighter than the integrator's.
+          # gh narrowed to api + pr. `gh api` can still reach most of the REST
+          # API, so the token's scopes and the prompt (no merge, force-push, or
+          # settings/secret changes) are the real limits. This surface fires on
+          # every comment, so it is tighter than the integrator's.
           # Quoted because the action shell-splits claude_args: unquoted, the
           # space in `gh api` splits the pattern and neither rule is allowed.
           claude_args: '--allowed-tools "Bash(gh api:*),Bash(gh pr:*),Bash(git:*),Bash(find:*),Read,Edit,Write,Grep,Glob"'
 
+      # A fresh copy checked out after the agent, so it can't have edited the
+      # script that judges it. The execution file itself is still agent-writable;
+      # PRO-15023's tool-allowlist hardening is what closes that.
+      - name: Checkout auto-doc for the result check
+        if: ${{ steps.agent.outcome == 'success' }}
+        uses: actions/checkout@v4
+        with:
+          repository: momentumdash/auto-doc
+          ref: ${{ inputs.auto-doc-ref }}
+          path: _auto-doc
+          fetch-depth: 1
+          sparse-checkout: scripts
+
       # The action ends green even when the agent was denied tools, so judge its
       # execution file before any later step treats the run as done.
       - name: Check agent result
+        id: check
         if: ${{ steps.agent.outcome == 'success' }}
         env:
           EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
-        run: node "$RUNNER_TEMP/auto-doc/scripts/agent-verdict.js" "$EXECUTION_FILE"
-
+        run: node _auto-doc/scripts/agent-verdict.js "$EXECUTION_FILE"
       # Runs after any failed step, so the commenter always hears back.
       - name: Report failure on the PR
         if: ${{ failure() && steps.guard.outputs.denied != 'true' }}
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token || github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          REASON: ${{ steps.check.outcome == 'failure' && 'the agent was denied a tool call' || steps.agent.outcome == 'failure' && 'the agent run failed' || 'a setup step failed' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "auto-doc couldn't finish acting on this feedback. Run: $RUN_URL"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "auto-doc couldn't finish acting on this feedback: $REASON. Run: $RUN_URL"

@@ -104,11 +104,11 @@ jobs:
             echo '__AUTO_DOC_EOF__'
           } >> "$GITHUB_OUTPUT"
 
-      # Out of the workspace before the integrator runs: it works inside this checkout
-      # and would otherwise sweep the vendored scripts into the doc branch. The
-      # result check after it still needs them, so move rather than delete.
-      - name: Move auto-doc out of the workspace
-        run: mv _auto-doc "$RUNNER_TEMP/auto-doc"
+      # Remove before the integrator runs: it works inside this checkout and would
+      # otherwise sweep the vendored scripts into the doc branch, and it must not
+      # be able to edit the verdict script that judges it.
+      - name: Drop auto-doc checkout
+        run: rm -rf _auto-doc
 
       - name: Run integrator
         id: agent
@@ -119,10 +119,24 @@ jobs:
           prompt: ${{ steps.build_prompt.outputs.prompt }}
           claude_args: '--allowed-tools Bash(gh:*),Bash(git:*),Bash(find:*),Read,Edit,Write,Grep,Glob'
 
+      # A fresh copy checked out after the agent, so it can't have edited the
+      # script that judges it. The execution file itself is still agent-writable;
+      # PRO-15023's tool-allowlist hardening is what closes that.
+      - name: Checkout auto-doc for the result check
+        if: ${{ steps.agent.outcome == 'success' }}
+        uses: actions/checkout@v4
+        with:
+          repository: momentumdash/auto-doc
+          ref: ${{ inputs.auto-doc-ref }}
+          path: _auto-doc
+          fetch-depth: 1
+          sparse-checkout: scripts
+
       # The action ends green even when the agent was denied tools, so judge its
       # execution file before any later step treats the run as done.
       - name: Check agent result
+        id: check
         if: ${{ steps.agent.outcome == 'success' }}
         env:
           EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
-        run: node "$RUNNER_TEMP/auto-doc/scripts/agent-verdict.js" "$EXECUTION_FILE"
+        run: node _auto-doc/scripts/agent-verdict.js "$EXECUTION_FILE"

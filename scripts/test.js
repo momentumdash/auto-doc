@@ -11,7 +11,7 @@ import path from 'node:path'
 import { LAST_REVIEWED_REF, firstChangedCommit } from './cleanup-gate.js'
 import { BOT_MARKER_PREFIX, buildReplyBody, botMarker, ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
 import { cleanupPrompt, integratorPrompt, respondPrompt } from './prompts.js'
-import { runFailure } from './agent-verdict.js'
+import { deniedCalls } from './agent-verdict.js'
 import { eyesTargets } from './respond-eyes.js'
 
 const body = ({ rule = 'Use tabs.', supersedesUrl } = {}) =>
@@ -80,44 +80,70 @@ assert.match(ungated, /at least one `\+1` reaction from a user whose `user\.type
 assert.deepStrictEqual(eyesTargets({ eventName: 'issue_comment', commentId: '5' }), [{ issueCommentId: '5' }])
 // A lone thread reply arrives as an empty-body review: react on the reply only.
 assert.deepStrictEqual(
-	eyesTargets({ eventName: 'pull_request_review', reviewBody: '', reviewNodeId: 'PRR_1', reviewComments: [{ id: 7 }] }),
+	eyesTargets({ eventName: 'pull_request_review', review: { body: '', node_id: 'PRR_1' }, reviewComments: [{ id: 7 }] }),
 	[{ reviewCommentId: 7 }]
 )
 // A body-only review still gets 👀, on the review node itself.
 assert.deepStrictEqual(
-	eyesTargets({ eventName: 'pull_request_review', reviewBody: 'lgtm', reviewNodeId: 'PRR_1', reviewComments: [] }),
+	eyesTargets({ eventName: 'pull_request_review', review: { body: 'lgtm', node_id: 'PRR_1' }, reviewComments: [] }),
 	[{ reviewNodeId: 'PRR_1' }]
 )
 assert.deepStrictEqual(
-	eyesTargets({ eventName: 'pull_request_review', reviewBody: 'see inline', reviewNodeId: 'PRR_1', reviewComments: [{ id: 7 }, { id: 8 }] }),
+	eyesTargets({ eventName: 'pull_request_review', review: { body: 'see inline', node_id: 'PRR_1' }, reviewComments: [{ id: 7 }, { id: 8 }] }),
 	[{ reviewNodeId: 'PRR_1' }, { reviewCommentId: 7 }, { reviewCommentId: 8 }]
 )
 
 // --- Agent verdict (respond, cleanup, integrate) ---------------------------
-const result = extra => [{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'success', is_error: false, permission_denials: [], ...extra }]
-assert.strictEqual(runFailure(result()), null)
-// The marketing-site#828 shape: the action reports success, the agent was blocked.
-assert.match(
-	runFailure(result({ permission_denials: [{ tool_name: 'Bash' }, { tool_name: 'Bash' }, { tool_name: 'Edit' }] })),
-	/3 tool call\(s\) denied: Bash, Edit/
+const result = denials => [{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'success', is_error: false, permission_denials: denials }]
+assert.deepStrictEqual(deniedCalls(result([])), [])
+// The marketing-site#828 shape: the action reports success, the agent was
+// blocked. Each denial names where it got stuck, capped for the log.
+assert.deepStrictEqual(
+	deniedCalls(result([
+		{ tool_name: 'Bash', tool_input: { command: 'gh api repos/o/r/pulls/1/reviews/9' } },
+		{ tool_name: 'Write', tool_input: { file_path: '/tmp/body.md', content: 'x' } },
+	])),
+	['denied Bash: gh api repos/o/r/pulls/1/reviews/9', 'denied Write: /tmp/body.md']
 )
-assert.match(runFailure(result({ is_error: true })), /is_error/)
-assert.match(runFailure(result({ subtype: 'error_max_turns' })), /error_max_turns/)
-assert.match(runFailure([{ type: 'system', subtype: 'init' }]), /no result/)
-assert.match(runFailure(null), /no result/)
+assert.strictEqual(deniedCalls(result([{ tool_name: 'Bash', tool_input: { command: 'x'.repeat(500) } }]))[0].length, 200)
 
 // The CLI must fail closed, run through a symlinked path too: if it ever
-// skipped its own dispatch, `verdict` would exit 0 and hide the failure.
+// skipped its own dispatch, it would exit 0 and hide the failure.
 const verdictDir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-doc-test-'))
 fs.symlinkSync(import.meta.dirname, path.join(verdictDir, 'scripts'))
 const execFile = path.join(verdictDir, 'denied.json')
-fs.writeFileSync(execFile, JSON.stringify(result({ permission_denials: [{ tool_name: 'Bash' }] })))
+fs.writeFileSync(execFile, JSON.stringify(result([{ tool_name: 'Bash', tool_input: { command: 'gh pr view 1' } }])))
 const verdict = file => execFileSync('node', [path.join(verdictDir, 'scripts', 'agent-verdict.js'), file], { encoding: 'utf-8' })
-assert.throws(() => verdict(execFile), err => /denied: Bash/.test(err.stdout))
-assert.throws(() => verdict(path.join(verdictDir, 'missing.json')), err => /no execution file/.test(err.stdout))
-fs.writeFileSync(execFile, JSON.stringify(result()))
+assert.throws(() => verdict(execFile), err => /^::error::denied Bash: gh pr view 1$/m.test(err.stdout))
+assert.throws(() => verdict(path.join(verdictDir, 'missing.json')), err => /no readable execution file/.test(err.stdout))
+fs.writeFileSync(execFile, '{}')
+assert.throws(() => verdict(execFile), err => /no readable execution file/.test(err.stdout))
+fs.writeFileSync(execFile, JSON.stringify(result([])))
 assert.strictEqual(verdict(execFile), '')
 fs.rmSync(verdictDir, { recursive: true })
+
+// --- claude_args allowlists arrive whole -----------------------------------
+// claude-code-action shell-splits claude_args, so an unquoted `Bash(gh api:*)`
+// splits on its space into `Bash(gh` + `api:*)` and neither rule matches.
+// Tokenize quote-aware the same way and require every entry to be one tool.
+const repoRoot = path.join(import.meta.dirname, '..')
+const yamlFiles = ['.github/workflows', 'examples'].flatMap(d =>
+	fs.readdirSync(path.join(repoRoot, d)).filter(f => f.endsWith('.yml')).map(f => path.join(d, f))
+)
+const shellSplit = str => [...str.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map(m => m[1] ?? m[2] ?? m[3])
+let allowlists = 0
+for (const file of yamlFiles) {
+	for (const [, raw] of fs.readFileSync(path.join(repoRoot, file), 'utf-8').matchAll(/^\s*claude_args:\s*'((?:[^']|'')*)'\s*$/gm)) {
+		const tokens = shellSplit(raw.replaceAll("''", "'"))
+		const start = tokens.indexOf('--allowed-tools') + 1
+		assert.ok(start > 0, `${file}: claude_args has no --allowed-tools`)
+		const end = tokens.findIndex((t, i) => i >= start && t.startsWith('--'))
+		const entries = tokens.slice(start, end < 0 ? undefined : end).flatMap(t => t.split(',')).map(t => t.trim()).filter(Boolean)
+		for (const e of entries) assert.match(e, /^[A-Za-z]\w*(\([^()]+\))?$/, `${file}: allowlist entry split apart: ${e}`)
+		allowlists++
+	}
+}
+assert.ok(allowlists >= 3, `expected the respond, cleanup, and integrate allowlists, found ${allowlists}`)
 
 // --- Prompt commands fit the Bash allowlist --------------------------------
 // The allowlist matches each command as written, so shell variables, command

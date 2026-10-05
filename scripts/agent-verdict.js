@@ -1,34 +1,29 @@
 /* global process */
-// Fails a step when a claude-code-action run didn't really finish. The action
-// reports success even when the agent was denied tools, so steps after it
-// (replies, recording a cleanup as done) would otherwise run on a no-op.
+// Fails a step when the agent was denied tool calls. claude-code-action already
+// fails its own step on an error result, but ends green on denials, so later
+// steps (replies, recording a cleanup as done) would otherwise run on a no-op.
 //   node agent-verdict.js <execution_file>
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-/** Why the run failed, or null if it finished cleanly. */
-export function runFailure(messages) {
-	const result = Array.isArray(messages) ? messages.findLast(m => m?.type === 'result') : undefined
-	if (!result) return 'no result from the agent'
-	if (result.is_error) return `agent reported is_error (${result.subtype})`
-	if (result.subtype !== 'success') return `agent ended with ${result.subtype}`
-	const denied = result.permission_denials ?? []
-	if (denied.length) return `${denied.length} tool call(s) denied: ${[...new Set(denied.map(d => d.tool_name))].join(', ')}`
-	return null
+/** One line per denied call: the tool plus its command or file, capped. */
+export function deniedCalls(messages) {
+	const result = messages.findLast(m => m?.type === 'result')
+	return (result?.permission_denials ?? []).map(({ tool_name: tool, tool_input: input = {} }) =>
+		`denied ${tool}: ${input.command ?? input.file_path ?? JSON.stringify(input)}`.slice(0, 200)
+	)
 }
 
-// CLI only when run directly, so test.js can import runFailure. Compare real
-// paths: Node resolves symlinks for import.meta.url, and a mismatch would skip
-// the check and pass silently.
+// CLI only when run directly, so test.js can import deniedCalls. Real paths:
+// Node resolves symlinks for import.meta.url, and a mismatch would skip the
+// check and pass silently.
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-	let reason
+	let denied
 	try {
-		reason = runFailure(JSON.parse(fs.readFileSync(process.argv[2], 'utf-8')))
+		denied = deniedCalls(JSON.parse(fs.readFileSync(process.argv[2], 'utf-8')))
 	} catch {
-		reason = 'no execution file from the agent'
+		denied = ['no readable execution file from the agent']
 	}
-	if (reason) {
-		console.log(`::error::${reason}`)
-		process.exit(1)
-	}
+	for (const line of denied) console.log(`::error::${line}`)
+	if (denied.length) process.exit(1)
 }
