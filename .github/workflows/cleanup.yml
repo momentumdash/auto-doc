@@ -109,15 +109,25 @@ jobs:
             echo '__AUTO_DOC_EOF__'
           } >> "$GITHUB_OUTPUT"
 
-      # Remove before the agent runs: it works inside this checkout and would
-      # otherwise sweep the vendored scripts into the cleanup branch.
-      - name: Drop auto-doc checkout
-        run: rm -rf _auto-doc
+      # Out of the workspace before the agent runs: it works inside this checkout
+      # and would otherwise sweep the vendored scripts into the cleanup branch. The
+      # result check after it still needs them, so move rather than delete.
+      - name: Move auto-doc out of the workspace
+        run: mv _auto-doc "$RUNNER_TEMP/auto-doc"
 
       - name: Run cleanup agent
+        id: agent
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.app_token.outputs.token || secrets.GITHUB_TOKEN }}
           prompt: ${{ steps.build_prompt.outputs.prompt }}
           claude_args: '--allowed-tools Bash(gh:*),Bash(git:*),Bash(find:*),Read,Edit,Write,Grep,Glob'
+
+      # The action ends green even when the agent was denied tools, so judge its
+      # execution file before any later step treats the run as done.
+      - name: Check agent result
+        if: ${{ steps.agent.outcome == 'success' }}
+        env:
+          EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
+        run: node "$RUNNER_TEMP/auto-doc/scripts/agent-verdict.js" "$EXECUTION_FILE"

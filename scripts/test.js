@@ -10,7 +10,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { BOT_MARKER_PREFIX, buildReplyBody, botMarker, ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
 import { integratorPrompt } from './prompts.js'
-import { eyesTargets, runFailure } from './respond-status.js'
+import { runFailure } from './agent-verdict.js'
+import { eyesTargets } from './respond-eyes.js'
 
 const body = ({ rule = 'Use tabs.', supersedesUrl } = {}) =>
 	buildReplyBody({ sourceCommentId: 42, rule, supersedesUrl })
@@ -91,7 +92,7 @@ assert.deepStrictEqual(
 	[{ reviewNodeId: 'PRR_1' }, { reviewCommentId: 7 }, { reviewCommentId: 8 }]
 )
 
-// --- Responder verdict -----------------------------------------------------
+// --- Agent verdict (respond, cleanup, integrate) ---------------------------
 const result = extra => [{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'success', is_error: false, permission_denials: [], ...extra }]
 assert.strictEqual(runFailure(result()), null)
 // The marketing-site#828 shape: the action reports success, the agent was blocked.
@@ -110,7 +111,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-doc-test-'))
 fs.symlinkSync(import.meta.dirname, path.join(tmp, 'scripts'))
 const execFile = path.join(tmp, 'denied.json')
 fs.writeFileSync(execFile, JSON.stringify(result({ permission_denials: [{ tool_name: 'Bash' }] })))
-const verdict = file => execFileSync('node', [path.join(tmp, 'scripts', 'respond-status.js'), 'verdict', file], { encoding: 'utf-8' })
+const verdict = file => execFileSync('node', [path.join(tmp, 'scripts', 'agent-verdict.js'), file], { encoding: 'utf-8' })
 assert.throws(() => verdict(execFile), err => /denied: Bash/.test(err.stdout))
 assert.throws(() => verdict(path.join(tmp, 'missing.json')), err => /no execution file/.test(err.stdout))
 fs.writeFileSync(execFile, JSON.stringify(result()))

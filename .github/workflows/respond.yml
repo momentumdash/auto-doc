@@ -135,7 +135,7 @@ jobs:
           REVIEW_NODE_ID: ${{ github.event.review.node_id }}
           REVIEW_BODY: ${{ github.event.review.body }}
           COMMENT_ID: ${{ github.event.comment.id }}
-        run: node "$RUNNER_TEMP/auto-doc/scripts/respond-status.js" eyes
+        run: node "$RUNNER_TEMP/auto-doc/scripts/respond-eyes.js"
 
       - name: Build responder prompt
         id: build_prompt
@@ -158,7 +158,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Run responder
-        id: responder
+        id: agent
         if: ${{ steps.guard.outputs.denied != 'true' }}
         uses: anthropics/claude-code-action@v1
         with:
@@ -172,20 +172,20 @@ jobs:
           # space in `gh api` splits the pattern and neither rule is allowed.
           claude_args: '--allowed-tools "Bash(gh api:*),Bash(gh pr:*),Bash(git:*),Bash(find:*),Read,Edit,Write,Grep,Glob"'
 
-      # The action ends green when the agent was denied tools, so judge the
-      # execution file too. Runs after any earlier failure as well, so the
-      # commenter always hears back.
+      # The action ends green even when the agent was denied tools, so judge its
+      # execution file before any later step treats the run as done.
+      - name: Check agent result
+        if: ${{ steps.agent.outcome == 'success' }}
+        env:
+          EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
+        run: node "$RUNNER_TEMP/auto-doc/scripts/agent-verdict.js" "$EXECUTION_FILE"
+
+      # Runs after any failed step, so the commenter always hears back.
       - name: Report failure on the PR
-        if: ${{ !cancelled() && steps.guard.outputs.denied != 'true' }}
+        if: ${{ failure() && steps.guard.outputs.denied != 'true' }}
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token || github.token }}
-          OUTCOME: ${{ steps.responder.outcome }}
-          EXECUTION_FILE: ${{ steps.responder.outputs.execution_file }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          reason="$(node "$RUNNER_TEMP/auto-doc/scripts/respond-status.js" verdict "$EXECUTION_FILE")" && [ "$OUTCOME" = success ] && exit 0
-          [ "$OUTCOME" = success ] || reason="responder step ${OUTCOME:-not run}${reason:+, $reason}"
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "auto-doc couldn't finish acting on this feedback ($reason). Run: $RUN_URL"
-          echo "::error::auto-doc respond failed: $reason"
-          exit 1
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "auto-doc couldn't finish acting on this feedback. Run: $RUN_URL"
