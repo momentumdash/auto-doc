@@ -10,7 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { LAST_REVIEWED_REF, firstChangedCommit } from './cleanup-gate.js'
 import { BOT_MARKER_PREFIX, buildReplyBody, botMarker, ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
-import { integratorPrompt } from './prompts.js'
+import { cleanupPrompt, integratorPrompt, respondPrompt } from './prompts.js'
 import { runFailure } from './agent-verdict.js'
 import { eyesTargets } from './respond-eyes.js'
 
@@ -118,6 +118,27 @@ assert.throws(() => verdict(path.join(verdictDir, 'missing.json')), err => /no e
 fs.writeFileSync(execFile, JSON.stringify(result()))
 assert.strictEqual(verdict(execFile), '')
 fs.rmSync(verdictDir, { recursive: true })
+
+// --- Prompt commands fit the Bash allowlist --------------------------------
+// The allowlist matches each command as written, so shell variables, command
+// substitution, and writes to /tmp are denied, and a denial fails the run.
+// Scan only command text (indented lines and code spans starting with gh, git,
+// or find), so prose that names these constructs still passes.
+const ctx = { prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main', reviewers: ['dace'], reviewId: 9, commentId: 5 }
+const prompts = {
+	integrate: integratorPrompt(ctx),
+	cleanup: cleanupPrompt(ctx),
+	'respond (review)': respondPrompt({ ...ctx, eventName: 'pull_request_review' }),
+	'respond (comment)': respondPrompt({ ...ctx, eventName: 'issue_comment' }),
+}
+for (const [name, text] of Object.entries(prompts)) {
+	const commands = [
+		...text.split('\n').filter(l => /^\s+(gh|git|find|--|>)/.test(l)),
+		...[...text.matchAll(/`((?:gh|git|find) [^`]*)`/g)].map(m => m[1]),
+	]
+	assert.ok(commands.length > 5, `${name}: found too few commands to check (${commands.length})`)
+	for (const c of commands) assert.doesNotMatch(c, /\$\(|"\$|\$[A-Za-z_{]|>>? ?\/tmp|\/tmp\//, `${name} uses a denied shell construct: ${c.trim()}`)
+}
 
 // --- build-prompt.js CLI render smoke --------------------------------------
 // Each mode must render a non-empty prompt, and an unknown mode or a missing
