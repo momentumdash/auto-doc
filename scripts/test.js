@@ -113,7 +113,7 @@ const prs = {
 	humanMerge: [humanPr('humanMerge'), botPr('openBotPrTestMerge')],
 	integratorMerge: [botPr('integratorMerge', 'auto-doc/pr-7')],
 	unlabeledBot: [botPr('unlabeledBot', 'auto-doc/cleanup-2026-10-05', ['dependencies'])],
-	humanLabeled: [{ ...humanPr('humanLabeled'), labels: ['auto-doc'] }],
+	humanLabeled: [{ ...humanPr('humanLabeled'), head_ref: 'auto-doc/cleanup-2026-10-05', labels: ['auto-doc'] }],
 	directPush: [],
 }
 const prsFor = sha => prs[sha]
@@ -151,11 +151,9 @@ cat "${fixtures}/$(basename "$(dirname "$3")")" 2>/dev/null || true
 	execFileSync('git', ['init', '-q', '-b', 'main', work], { env })
 	git('remote', 'add', 'origin', path.join(tmp, 'origin.git'))
 	git('commit', '-q', '--allow-empty', '-m', 'base')
-	const commit = (message, pr) => {
+	const commit = message => {
 		git('commit', '-q', '--allow-empty', '-m', message)
-		const sha = git('rev-parse', 'HEAD')
-		if (pr) fs.writeFileSync(path.join(fixtures, sha), `${JSON.stringify({ ...pr, merge_commit_sha: sha })}\n`)
-		return sha
+		return git('rev-parse', 'HEAD')
 	}
 	const gate = (extraEnv = {}) => {
 		const out = path.join(tmp, 'out')
@@ -197,12 +195,6 @@ cat "${fixtures}/$(basename "$(dirname "$3")")" 2>/dev/null || true
 	decision = gate()
 	assert.strictEqual(decision.output, 'skip=true\n')
 
-	const integratorMergeSha = commit('Merge integrator PR', botPr('', 'auto-doc/pr-7'))
-	decision = gate()
-	assert.strictEqual(decision.output, 'skip=false\n')
-	assert.ok(decision.log.includes(`\`${integratorMergeSha}\` landed`))
-
-	git('reset', '-q', '--hard', cleanupMerge)
 	const humanCommit = commit('Human commit')
 	decision = gate()
 	assert.strictEqual(decision.output, 'skip=false\n')

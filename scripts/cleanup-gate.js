@@ -1,8 +1,8 @@
 /* global process */
 // Decides whether a scheduled cleanup can skip: it can when every commit that
 // landed on the base branch since the last successful cleanup came from a
-// cleanup PR. Any error runs the cleanup instead. Runs in a checkout of the base branch (HEAD = base tip);
-// writes skip=true|false to $GITHUB_OUTPUT and the reason to the step summary.
+// cleanup PR. Any error runs the cleanup instead. Runs in a checkout of the
+// base branch (HEAD = base tip); writes skip=true|false to $GITHUB_OUTPUT and the reason to the step summary.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 
@@ -21,14 +21,14 @@ const CLEANUP_BRANCH_PREFIX = 'auto-doc/cleanup-'
 // contains it: GitHub also lists every open PR branched after the commit.
 // ponytail: a rebase-merged cleanup PR only matches its last commit, so the
 // earlier ones read as changes and the cleanup runs; that errs toward running.
-const isAutoDocMerge = (pr, sha) =>
+const isCleanupMerge = (pr, sha) =>
 	pr.merge_commit_sha === sha &&
 	pr.user.type === 'Bot' &&
 	pr.labels.includes('auto-doc') &&
 	pr.head_ref.startsWith(CLEANUP_BRANCH_PREFIX)
 
 export function firstChangedCommit(commits, prsFor) {
-	return commits.find(sha => !prsFor(sha).some(pr => isAutoDocMerge(pr, sha))) ?? null
+	return commits.find(sha => !prsFor(sha).some(pr => isCleanupMerge(pr, sha))) ?? null
 }
 
 function prsFor(sha) {
@@ -64,11 +64,11 @@ if (import.meta.filename === process.argv[1]) {
 	try {
 		decision = decide()
 	} catch (error) {
-		decision = { skip: false, reason: `gate error: ${error.message.split('\n')[0]}` }
+		decision = { skip: false, error: true, reason: `gate error: ${error.message.split('\n')[0]}` }
 	}
 	const { skip, reason } = decision
 	const line = `${skip ? 'Skipping' : 'Running'} cleanup: ${reason}.`
-	console.log(line)
+	console.log(decision.error ? `::warning::${line}` : line)
 	fs.appendFileSync(process.env.GITHUB_OUTPUT, `skip=${skip}\n`)
 	fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${line}\n`)
 }

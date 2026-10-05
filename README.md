@@ -241,9 +241,13 @@ The skip reason and the commit it compared against appear in the run summary.
 
 The gate errs toward running. It runs the cleanup when there is no recorded ref
 (so the first scheduled run after adopting this release is always a full run),
-when the ref is no longer in the base branch's history, and when the gate itself
-errors (a GitHub API failure, say), with a `gate error` reason in the summary. A
-failed run records nothing, so the next one runs again. A manual dispatch always
+when the ref is no longer in the base branch's history, and when the gate job
+fails for any reason short of cancellation (a GitHub API failure, a checkout
+failure, a missing script). A lookup error inside the gate shows as a `gate error`
+reason in the summary and a run-page warning. If the gate job died before it
+resolved the base commit, the cleanup still runs, but the record step then fails
+loudly rather than recording a ref. A failed run records nothing, so the next one
+runs again. A manual dispatch always
 runs, and its success resets the baseline. To force a full review on the next
 schedule, delete the ref: `git push origin :refs/auto-doc/cleanup`.
 
