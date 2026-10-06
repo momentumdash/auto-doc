@@ -7,6 +7,11 @@
 # can keep, drop, or adjust it. It never touches code, tests, or config, and it
 # never merges. If there's nothing worth changing it opens no PR.
 #
+# A new cleanup PR supersedes any still-open one: the agent first carries that
+# PR's unaddressed review feedback forward, and once its own PR is open the
+# workflow closes the old one with a link. An old PR stays open when this run
+# opens nothing, or when a person has pushed commits to it.
+#
 # A scheduled run skips before the agent starts when nothing but cleanup PRs
 # has landed on the base branch since the last successful cleanup. The last
 # successful cleanup records the base commit it reviewed at
@@ -141,6 +146,13 @@ jobs:
           permission-pull-requests: write
           permission-issues: write
 
+      # Before the agent, so it can carry their review feedback forward.
+      - name: Find open cleanup PRs to supersede
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node _auto-doc/scripts/cleanup-supersede.js find
+
       - name: Build cleanup prompt
         id: build_prompt
         env:
@@ -148,6 +160,8 @@ jobs:
           REPO_NAME: ${{ github.event.repository.name }}
           DOC_STYLE_FILE: ${{ inputs.doc-style-file }}
           REVIEWERS: ${{ inputs.reviewers || vars.AUTO_DOC_CLEANUP_REVIEWERS }}
+          SUPERSEDES: ${{ steps.previous.outputs.numbers }}
+          AUTO_DOC_IGNORE_AUTHORS: ${{ vars.AUTO_DOC_IGNORE_AUTHORS }}
         run: |
           {
             echo 'prompt<<__AUTO_DOC_EOF__'
@@ -202,3 +216,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ needs.gate.outputs.base-sha }}
         run: git -c http.https://github.com/.extraheader= push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${SHA:?}:refs/auto-doc/cleanup"
+
+      # After recording, so a failed close fails the run without making next
+      # week review the same base again. GITHUB_TOKEN, so the link comment
+      # doesn't trigger respond.yml.
+      - name: Close superseded cleanup PRs
+        if: ${{ steps.previous.outputs.numbers != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS: ${{ steps.previous.outputs.numbers }}
+        run: node _auto-doc/scripts/cleanup-supersede.js close

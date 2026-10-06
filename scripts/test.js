@@ -2,13 +2,15 @@
 // Offline checks for the pure pieces of the extractor and responder: the
 // sanitization in buildReplyBody (where model output derived from an untrusted
 // comment becomes markdown a human is asked to approve), the author denylist,
-// and the responder's 👀 targets and run verdict. Run with: node test.js
+// the responder's 👀 targets and run verdict, and the cleanup gate and
+// supersede steps. Run with: node test.js
 import assert from 'node:assert'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { LAST_REVIEWED_REF, firstChangedCommit } from './cleanup-gate.js'
+import { supersede } from './cleanup-supersede.js'
 import { BOT_MARKER_PREFIX, buildReplyBody, botMarker, ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
 import { SHELL_RULES, cleanupPrompt, integratorPrompt, respondPrompt } from './prompts.js'
 import { deniedCalls } from './agent-verdict.js'
@@ -161,13 +163,17 @@ assert.ok(allowlists >= 3, `expected the respond, cleanup, and integrate allowli
 // substitution, and shell redirects or heredocs are denied, and a denial fails
 // the run. Scan the whole rendered prompt, minus the one paragraph that names
 // these constructs to forbid them.
-const ctx = { prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main', reviewers: ['dace'], reviewId: 9, commentId: 5 }
+const ctx = { prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main', reviewers: ['dace'], reviewId: 9, commentId: 5, supersedes: ['3', '5'], ignoreAuthors: ['flarpGPT'] }
 const prompts = {
 	integrate: integratorPrompt(ctx),
 	cleanup: cleanupPrompt(ctx),
 	'respond (review)': respondPrompt({ ...ctx, eventName: 'pull_request_review' }),
 	'respond (comment)': respondPrompt({ ...ctx, eventName: 'issue_comment' }),
 }
+// The lint below must reach the superseded-PR feedback step, one fetch per PR.
+assert.match(prompts.cleanup, /pullRequest\(number:3\)[^\n]*\n[^\n]*pullRequest\(number:5\)/)
+assert.match(prompts.cleanup, /automation logins \(case-insensitive\): flarpgpt/)
+assert.doesNotMatch(cleanupPrompt({ ...ctx, supersedes: [] }), /pullRequest\(number:|Carried forward/)
 // Redirects with or without spaces (not 2>&1, ->, =>), heredocs, process
 // substitution, ANSI-C quoting, and tee.
 const DENIED_SHELL = [/\$\(/, /"\$/, /\$[A-Za-z_{']/, / >>? /, /(^|[^-=<\s])\s*>>?(?!&)\S/, /<</, /<\(/, /\|\s*tee\b/]
@@ -244,6 +250,100 @@ assert.strictEqual(firstChangedCommit(['integratorMerge'], prsFor), 'integratorM
 assert.strictEqual(firstChangedCommit(['unlabeledBot'], prsFor), 'unlabeledBot')
 assert.strictEqual(firstChangedCommit(['humanLabeled'], prsFor), 'humanLabeled')
 assert.strictEqual(firstChangedCommit(['directPush'], prsFor), 'directPush')
+
+// --- Superseding the previous cleanup PR ----------------------------------
+// A fake GitHub: `open` is the open cleanup PRs, `commits` maps a PR to its
+// commits, `closeError` makes close throw (and `closeMerges` lands the PR
+// first, the merged-between-lookup-and-close race). Records every write.
+const fakeGh = ({ open, commits = {}, closeError, closeMerges } = {}) => {
+	const calls = []
+	const state = new Set(open)
+	return {
+		calls,
+		api: {
+			openCleanupPrs: () => [...open],
+			isOpen: n => state.has(n),
+			commits: n => commits[n] ?? [{ parents: 1, author: 'Bot' }],
+			close: (n, comment) => {
+				if (closeMerges) state.delete(n)
+				if (closeError) throw new Error(`${closeError}\nmore detail`)
+				state.delete(n)
+				calls.push(['close', n, comment])
+			},
+			appendBody: (n, text) => calls.push(['appendBody', n, text]),
+		},
+	}
+}
+const supersedeWith = (previous, opts) => {
+	const fake = fakeGh(opts)
+	return { failed: supersede(previous, fake.api), calls: fake.calls }
+}
+
+// The happy path: the previous PR gets the link comment and closes, and the new
+// PR's body names it.
+let run = supersedeWith([3], { open: [3, 7] })
+assert.deepStrictEqual(run.failed, [])
+assert.strictEqual(run.calls.length, 2)
+assert.deepStrictEqual(run.calls[0].slice(0, 2), ['close', 3])
+assert.match(run.calls[0][2], /^Superseded by #7,/)
+assert.deepStrictEqual(run.calls[1], ['appendBody', 7, 'Supersedes #3.'])
+
+// Nothing opened this run (no open PR newer than the previous ones): touch nothing.
+assert.deepStrictEqual(supersedeWith([3], { open: [3] }).calls, [])
+assert.deepStrictEqual(supersedeWith([5], { open: [2, 5] }).calls, [])
+assert.deepStrictEqual(supersedeWith([], { open: [7] }).calls, [])
+
+// Two still open: both are superseded, since each is a full-tree review.
+run = supersedeWith([3, 5], { open: [3, 5, 7] })
+assert.deepStrictEqual(run.calls.map(c => c.slice(0, 2)), [['close', 3], ['close', 5], ['appendBody', 7]])
+assert.strictEqual(run.calls[2][2], 'Supersedes #3, #5.')
+
+// Merged or closed after the lookup: no comment, no close, no Supersedes line.
+run = supersedeWith([3], { open: [7] })
+assert.deepStrictEqual(run.calls, [])
+// ...including in the window between the state check and the close itself.
+run = supersedeWith([3], { open: [3, 7], closeError: 'already merged', closeMerges: true })
+assert.deepStrictEqual(run, { failed: [], calls: [] })
+
+// A failed close is reported, in the new PR and to the caller.
+run = supersedeWith([3], { open: [3, 7], closeError: 'HTTP 403' })
+assert.deepStrictEqual(run.failed, [3])
+assert.deepStrictEqual(run.calls, [['appendBody', 7, 'Could not close #3 (HTTP 403). Close it by hand.']])
+
+// A person's commit keeps the PR open; the new PR says so. A commit with no
+// linked account counts as a person's too.
+for (const human of [{ parents: 1, author: 'User' }, { parents: 1, author: null }]) {
+	run = supersedeWith([3], { open: [3, 7], commits: { 3: [{ parents: 1, author: 'Bot' }, human] } })
+	assert.deepStrictEqual(run.calls.map(c => c.slice(0, 2)), [['appendBody', 7]])
+	assert.match(run.calls[0][2], /^#3 stays open because it has commits from a person\./)
+}
+// A person merging the base in (the stale-PR workaround) isn't an edit to keep.
+run = supersedeWith([3], { open: [3, 7], commits: { 3: [{ parents: 1, author: 'Bot' }, { parents: 2, author: 'User' }] } })
+assert.deepStrictEqual(run.calls.map(c => c.slice(0, 2)), [['close', 3], ['appendBody', 7]])
+
+// The `find` CLI keeps only bot-opened, auto-doc-labeled auto-doc/cleanup-* PRs
+// (stub gh serving the API projection), and writes them for the close step.
+{
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-doc-supersede-'))
+	try {
+		const listed = [
+			botPr(null, 'auto-doc/cleanup-2026-09-28'),
+			{ ...botPr(null, 'auto-doc/cleanup-2026-09-21'), user: { type: 'User' } },
+			botPr(null, 'auto-doc/pr-12'),
+			botPr(null, 'auto-doc/cleanup-2026-09-14', ['documentation']),
+		].map((pr, i) => JSON.stringify({ number: [12, 9, 8, 4][i], ...pr })).join('\n')
+		fs.writeFileSync(path.join(dir, 'gh'), `#!/bin/sh\ncat <<'EOF'\n${listed}\nEOF\n`, { mode: 0o755 })
+		const out = path.join(dir, 'out')
+		fs.writeFileSync(out, '')
+		execFileSync('node', [path.join(import.meta.dirname, 'cleanup-supersede.js'), 'find'], {
+			env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}`, GITHUB_REPOSITORY: 'o/r', BASE_BRANCH: 'main', GITHUB_OUTPUT: out },
+			stdio: 'ignore',
+		})
+		assert.strictEqual(fs.readFileSync(out, 'utf-8'), 'numbers=12\n')
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true })
+	}
+}
 
 // The CLI against a throwaway repo with a local bare "origin", and a stub `gh`
 // that serves the fixtures above (as already-projected jq output, so the jq

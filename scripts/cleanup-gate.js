@@ -17,15 +17,16 @@ const run = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf-8' }).trim()
 // cleanup PRs count as noise. Matches the branch name in prompts.js.
 const CLEANUP_BRANCH_PREFIX = 'auto-doc/cleanup-'
 
+// Shape: the `{head_ref, user: {type}, labels: [name]}` projection both gh
+// lookups use. cleanup-supersede.js closes only PRs this matches.
+export const isCleanupPr = pr =>
+	pr.user.type === 'Bot' && pr.labels.includes('auto-doc') && pr.head_ref.startsWith(CLEANUP_BRANCH_PREFIX)
+
 // The PR whose merge produced this commit, not any PR whose branch merely
 // contains it: GitHub also lists every open PR branched after the commit.
 // ponytail: a rebase-merged cleanup PR only matches its last commit, so the
 // earlier ones read as changes and the cleanup runs; that errs toward running.
-const isCleanupMerge = (pr, sha) =>
-	pr.merge_commit_sha === sha &&
-	pr.user.type === 'Bot' &&
-	pr.labels.includes('auto-doc') &&
-	pr.head_ref.startsWith(CLEANUP_BRANCH_PREFIX)
+const isCleanupMerge = (pr, sha) => pr.merge_commit_sha === sha && isCleanupPr(pr)
 
 export function firstChangedCommit(commits, prsFor) {
 	return commits.find(sha => !prsFor(sha).some(pr => isCleanupMerge(pr, sha))) ?? null
