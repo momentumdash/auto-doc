@@ -467,42 +467,29 @@ ask for an edit, not just propose one.
 
 ## Releasing
 
-Callers reference the floating major tag: `@v2` with `auto-doc-ref: v2`. To
-release, merge to `main` and push a `v2.x.y` tag on the merged commit:
+Callers pin the floating major tag, `@v2` with `auto-doc-ref: v2`, so a release
+never needs a change in the calling repos. `v2` is moved by hand:
 
-```sh
-git fetch origin main
-git tag v2.3.0 origin/main
-git push origin v2.3.0
-```
+1. Merge the change to `main`.
+2. Tag a `main` commit `v2.x.y` and push it:
+   ```sh
+   git fetch origin main
+   git tag v2.x.y origin/main
+   git push origin v2.x.y
+   ```
+3. Move `v2` to that commit. The `protect release tags` ruleset on
+   `refs/tags/v*` blocks tag updates, so disable it in Settings → Rules, then:
+   ```sh
+   git tag -f v2 v2.x.y
+   git push --force origin refs/tags/v2
+   ```
+   and set enforcement back to **Active**.
+4. To roll back, do step 3 again with the previous release (`git tag -f v2 v2.2.0`).
 
-[`move-major-tag.yml`](.github/workflows/move-major-tag.yml) then force-moves
-`v2` to that commit, and every caller picks it up on its next run. Only
-three-number tags (`v2.3.0`) move the major tag; a prerelease like `v2.3.0-rc1`
-doesn't. The workflow refuses to move `v2` unless the release tag is on `main`
-and `v2` is an ancestor of it (so out-of-order tagging can't move it backwards).
-A breaking change gets a new major (`v3.0.0`, then `v3`), and callers
-move to `@v3` deliberately.
-
-To roll back, move `v2` to the previous release by hand:
-
-```sh
-git tag -f v2 v2.2.0
-git push -f origin v2
-```
-
-`v2` is what receives `AUTO_DOC_APP_PRIVATE_KEY`, an org-wide credential, so the
-`protect release tags` ruleset on `refs/tags/v*` has to let the release workflow's
-identity (and whoever rolls back) update `v2`, while still blocking
-everyone else. Check the policy after any edit, since enforcement alone doesn't
-show that the pattern or rules survived:
-
-```sh
-id=$(gh api repos/momentumdash/auto-doc/rulesets --jq '.[] | select(.target=="tag") | .id')
-gh api repos/momentumdash/auto-doc/rulesets/$id --jq \
-  '{enforcement, include: .conditions.ref_name.include, rules: [.rules[].type] | sort,
-    bypass: (.bypass_actors // [] | map("\(.actor_type):\(.bypass_mode)"))}'
-```
+A breaking change gets a new major (`v3.0.0`, then `v3`), and callers move to
+`@v3` deliberately. `v2` receives `AUTO_DOC_APP_PRIVATE_KEY`, an org-wide
+credential, which is why the ruleset has no bypass actors and moving the tag is
+a deliberate act.
 
 ## Development
 
