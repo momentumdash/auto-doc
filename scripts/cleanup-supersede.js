@@ -1,52 +1,58 @@
 /* global process */
 // Replaces last week's open cleanup PR with this run's, so review feedback never
 // lands on a PR that conflicts with the base or still runs a stale auto-doc pin.
-//   find   before the agent: writes numbers=<open cleanup PRs> to $GITHUB_OUTPUT
-//   close  after it, PREVIOUS=<those numbers>: closes each in favour of the new PR
+//   find   before the agent: writes numbers=<open cleanup PRs> and since=<now>
+//          to $GITHUB_OUTPUT
+//   close  after it, PREVIOUS=<numbers> SINCE=<since>: closes each in favour of
+//          the new PR
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import { isCleanupPr } from './cleanup-gate.js'
 
 // A merge commit only syncs the base in (someone working around a stale PR),
-// so it carries no edit the new PR would lose. A commit with no linked account
-// has no author type and counts as a person's.
+// so it carries no edit the new PR would lose. ponytail: a person's edits inside
+// a merge's conflict resolution go undetected; diff the merge against its
+// parents if that ever bites. A commit with no linked account counts as a person's.
 const isHumanCommit = c => c.parents < 2 && c.author !== 'Bot'
 
 /**
  * Closes every PR in `previous` in favour of the newest cleanup PR opened since,
- * and notes the outcome in that PR's body. Returns the PRs it couldn't close.
+ * and notes the outcome in that PR's body. `since` is when the agent was handed
+ * their feedback. Returns workflow annotations for the step log.
  */
-export function supersede(previous, api) {
-	if (!previous.length) return []
+export function supersede(previous, since, api) {
 	const newPr = api
 		.openCleanupPrs()
 		.filter(n => n > Math.max(...previous))
 		.at(-1)
-	// The agent opened nothing, so the earlier PR is still the live proposal.
-	if (!newPr) return []
+	if (!newPr) return [`::warning::No new cleanup PR found, so ${previous.map(n => `#${n}`).join(', ')} stays open.`]
 
 	const closed = []
 	const notes = []
-	const failed = []
+	const annotations = []
 	for (const n of previous) {
-		if (!api.isOpen(n)) continue
-		if (api.commits(n).some(isHumanCommit)) {
-			notes.push(`#${n} stays open because it has commits from a person. Reconcile it with this PR by hand.`)
-			continue
-		}
 		try {
-			api.close(n, `Superseded by #${newPr}, which re-runs the cleanup against the current base branch and carries this PR's open feedback forward.`)
-			closed.push(n)
-		} catch (error) {
-			// Merged or closed since the check above: nothing left to supersede.
 			if (!api.isOpen(n)) continue
-			failed.push(n)
+			if (api.commits(n).some(isHumanCommit)) {
+				notes.push(`#${n} stays open because it has commits from a person. Reconcile it with this PR by hand.`)
+			} else if (api.humanFeedbackTimes(n).some(at => Date.parse(at) > Date.parse(since))) {
+				notes.push(`#${n} stays open because it got review feedback after this run read it. Carry that over by hand.`)
+			} else {
+				api.close(n, `Superseded by #${newPr}, which re-runs the cleanup against the current base branch and carries this PR's open feedback forward. Feedback left here from now on won't be read.`)
+				closed.push(n)
+			}
+		} catch (error) {
 			notes.push(`Could not close #${n} (${error.message.split('\n')[0]}). Close it by hand.`)
+			annotations.push(`::error::Could not close superseded cleanup PR #${n}`)
 		}
 	}
 	if (closed.length) notes.unshift(`Supersedes ${closed.map(n => `#${n}`).join(', ')}.`)
-	if (notes.length) api.appendBody(newPr, notes.join('\n\n'))
-	return failed
+	try {
+		if (notes.length) api.appendBody(newPr, notes.join('\n\n'))
+	} catch (error) {
+		annotations.push(`::error::Could not note this on #${newPr}: ${notes.join(' ')} (${error.message.split('\n')[0]})`)
+	}
+	return annotations
 }
 
 function ghApi() {
@@ -78,6 +84,24 @@ function ghApi() {
 					'.[] | {parents: (.parents | length), author: .author.type}',
 				])
 			),
+		// When people commented or reviewed, newest last. Inline comments and
+		// replies each arrive as a review, so two connections cover it all.
+		humanFeedbackTimes: n =>
+			gh([
+				'api',
+				'graphql',
+				'-f',
+				'query=query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ comments(last:50){ nodes{ createdAt author{ __typename } } } reviews(last:50){ nodes{ createdAt author{ __typename } } } } } }',
+				'-f',
+				`owner=${repo.split('/')[0]}`,
+				'-f',
+				`name=${repo.split('/')[1]}`,
+				'-F',
+				`number=${n}`,
+				'--jq',
+				'.data.repository.pullRequest | (.comments.nodes[], .reviews.nodes[]) | select(.author.__typename == "User") | .createdAt',
+			])
+				.split('\n'),
 		close: (n, comment) => gh(['pr', 'close', `${n}`, '--repo', repo, '--comment', comment]),
 		appendBody: (n, text) => {
 			const body = gh(['api', `repos/${repo}/pulls/${n}`, '--jq', '.body // ""'])
@@ -97,12 +121,12 @@ if (import.meta.filename === process.argv[1]) {
 			console.log(`::warning::Could not list open cleanup PRs: ${error.message.split('\n')[0]}`)
 		}
 		console.log(numbers.length ? `Open cleanup PRs to supersede: ${numbers.join(', ')}` : 'No open cleanup PR to supersede.')
-		fs.appendFileSync(process.env.GITHUB_OUTPUT, `numbers=${numbers.join(' ')}\n`)
+		fs.appendFileSync(process.env.GITHUB_OUTPUT, `numbers=${numbers.join(' ')}\nsince=${new Date().toISOString()}\n`)
 	} else if (process.argv[2] === 'close') {
 		const previous = (process.env.PREVIOUS || '').split(' ').filter(Boolean).map(Number)
-		const failed = supersede(previous, api)
-		for (const n of failed) console.log(`::error::Could not close superseded cleanup PR #${n}`)
-		if (failed.length) process.exit(1)
+		const annotations = supersede(previous, process.env.SINCE, api)
+		for (const line of annotations) console.log(line)
+		if (annotations.some(line => line.startsWith('::error::'))) process.exit(1)
 	} else {
 		console.error(`cleanup-supersede: expected 'find' or 'close', got: ${process.argv[2]}`)
 		process.exit(1)

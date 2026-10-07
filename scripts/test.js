@@ -238,7 +238,10 @@ assert.doesNotMatch(supersedeRender, /x5/)
 const cleanupYml = fs.readFileSync(path.join(import.meta.dirname, '../.github/workflows/cleanup.yml'), 'utf-8')
 assert.match(cleanupYml, /id: previous\n[^]*?run: node _auto-doc\/scripts\/cleanup-supersede\.js find\n/)
 assert.match(cleanupYml, /^ +SUPERSEDES: \$\{\{ steps\.previous\.outputs\.numbers \}\}$/m)
-assert.match(cleanupYml, /^ +PREVIOUS: \$\{\{ steps\.previous\.outputs\.numbers \}\}\n +run: node _auto-doc\/scripts\/cleanup-supersede\.js close$/m)
+const closeStep = cleanupYml.match(/- name: Close superseded cleanup PRs\n[^]*?run: node _auto-doc\/scripts\/cleanup-supersede\.js close\n/)?.[0]
+assert.ok(closeStep, 'cleanup.yml has no close step')
+assert.match(closeStep, /^ +PREVIOUS: \$\{\{ steps\.previous\.outputs\.numbers \}\}$/m)
+assert.match(closeStep, /^ +SINCE: \$\{\{ steps\.previous\.outputs\.since \}\}$/m)
 assert.throws(() => runBuild(['bogus']), 'unknown mode must exit non-zero')
 assert.throws(() => runBuild(['respond'], { REPO_OWNER: 'o', REPO_NAME: 'r' }), 'respond without PR_NUMBER must exit non-zero')
 
@@ -274,45 +277,51 @@ assert.strictEqual(firstChangedCommit(['directPush'], prsFor), 'directPush')
 
 // --- Superseding the previous cleanup PR ----------------------------------
 // A fake GitHub: `open` is the open cleanup PRs, `commits` maps a PR to its
-// commits, `closeError` makes close throw (and `closeMerges` lands the PR
-// first, the merged-between-lookup-and-close race). Records every write.
-const fakeGh = ({ open, commits = {}, closeError, closeMerges } = {}) => {
+// commits, `feedbackAt` to when people commented or reviewed, and `fail` names
+// the call that throws. Records every write.
+const SINCE = '2026-10-05T09:00:00.000Z'
+const fakeGh = ({ open, commits = {}, feedbackAt = {}, fail } = {}) => {
 	const calls = []
 	const state = new Set(open)
+	const call = (name, fn) => (...args) => {
+		if (fail === name) throw new Error(`${name} failed: HTTP 502\nmore detail`)
+		return fn(...args)
+	}
 	return {
 		calls,
 		api: {
 			openCleanupPrs: () => [...open],
-			isOpen: n => state.has(n),
-			commits: n => commits[n] ?? [{ parents: 1, author: 'Bot' }],
-			close: (n, comment) => {
-				if (closeMerges) state.delete(n)
-				if (closeError) throw new Error(`${closeError}\nmore detail`)
+			isOpen: call('isOpen', n => state.has(n)),
+			commits: call('commits', n => commits[n] ?? [{ parents: 1, author: 'Bot' }]),
+			humanFeedbackTimes: call('humanFeedbackTimes', n => feedbackAt[n] ?? []),
+			close: call('close', (n, comment) => {
 				state.delete(n)
 				calls.push(['close', n, comment])
-			},
-			appendBody: (n, text) => calls.push(['appendBody', n, text]),
+			}),
+			appendBody: call('appendBody', (n, text) => calls.push(['appendBody', n, text])),
 		},
 	}
 }
 const supersedeWith = (previous, opts) => {
 	const fake = fakeGh(opts)
-	return { failed: supersede(previous, fake.api), calls: fake.calls }
+	return { annotations: supersede(previous, SINCE, fake.api), calls: fake.calls }
 }
 
 // The happy path: the previous PR gets the link comment and closes, and the new
 // PR's body names it.
 let run = supersedeWith([3], { open: [3, 7] })
-assert.deepStrictEqual(run.failed, [])
+assert.deepStrictEqual(run.annotations, [])
 assert.strictEqual(run.calls.length, 2)
 assert.deepStrictEqual(run.calls[0].slice(0, 2), ['close', 3])
-assert.match(run.calls[0][2], /^Superseded by #7,/)
+assert.match(run.calls[0][2], /^Superseded by #7,.* Feedback left here from now on won't be read\.$/)
 assert.deepStrictEqual(run.calls[1], ['appendBody', 7, 'Supersedes #3.'])
 
-// Nothing opened this run (no open PR newer than the previous ones): touch nothing.
-assert.deepStrictEqual(supersedeWith([3], { open: [3] }).calls, [])
-assert.deepStrictEqual(supersedeWith([5], { open: [2, 5] }).calls, [])
-assert.deepStrictEqual(supersedeWith([], { open: [7] }).calls, [])
+// Nothing opened this run (no open PR newer than the previous ones): touch
+// nothing, but say so in the log.
+for (const open of [[3], [2, 3]]) {
+	run = supersedeWith([3], { open })
+	assert.deepStrictEqual(run, { annotations: ['::warning::No new cleanup PR found, so #3 stays open.'], calls: [] })
+}
 
 // Two still open: both are superseded, since each is a full-tree review.
 run = supersedeWith([3, 5], { open: [3, 5, 7] })
@@ -320,16 +329,20 @@ assert.deepStrictEqual(run.calls.map(c => c.slice(0, 2)), [['close', 3], ['close
 assert.strictEqual(run.calls[2][2], 'Supersedes #3, #5.')
 
 // Merged or closed after the lookup: no comment, no close, no Supersedes line.
-run = supersedeWith([3], { open: [7] })
-assert.deepStrictEqual(run.calls, [])
-// ...including in the window between the state check and the close itself.
-run = supersedeWith([3], { open: [3, 7], closeError: 'already merged', closeMerges: true })
-assert.deepStrictEqual(run, { failed: [], calls: [] })
+assert.deepStrictEqual(supersedeWith([3], { open: [7] }), { annotations: [], calls: [] })
 
-// A failed close is reported, in the new PR and to the caller.
-run = supersedeWith([3], { open: [3, 7], closeError: 'HTTP 403' })
-assert.deepStrictEqual(run.failed, [3])
-assert.deepStrictEqual(run.calls, [['appendBody', 7, 'Could not close #3 (HTTP 403). Close it by hand.']])
+// Any failing call for one PR is reported, in the new PR and as an error, and
+// the other PRs still get handled.
+for (const fail of ['isOpen', 'commits', 'humanFeedbackTimes', 'close']) {
+	run = supersedeWith([3], { open: [3, 7], fail })
+	assert.deepStrictEqual(run, {
+		annotations: ['::error::Could not close superseded cleanup PR #3'],
+		calls: [['appendBody', 7, `Could not close #3 (${fail} failed: HTTP 502). Close it by hand.`]],
+	}, fail)
+}
+// A failed body edit still surfaces what it would have said.
+run = supersedeWith([3], { open: [3, 7], fail: 'appendBody' })
+assert.deepStrictEqual(run.annotations, ['::error::Could not note this on #7: Supersedes #3. (appendBody failed: HTTP 502)'])
 
 // A person's commit keeps the PR open; the new PR says so. A commit with no
 // linked account counts as a person's too.
@@ -341,6 +354,11 @@ for (const human of [{ parents: 1, author: 'User' }, { parents: 1, author: null 
 // A person merging the base in (the stale-PR workaround) isn't an edit to keep.
 run = supersedeWith([3], { open: [3, 7], commits: { 3: [{ parents: 1, author: 'Bot' }, { parents: 2, author: 'User' }] } })
 assert.deepStrictEqual(run.calls.map(c => c.slice(0, 2)), [['close', 3], ['appendBody', 7]])
+
+// Feedback after the agent read the PR keeps it open; feedback before doesn't.
+run = supersedeWith([3, 5], { open: [3, 5, 7], feedbackAt: { 3: ['2026-10-05T09:04:00Z'], 5: ['2026-10-05T08:59:59Z'] } })
+assert.deepStrictEqual(run.calls.map(c => c.slice(0, 2)), [['close', 5], ['appendBody', 7]])
+assert.strictEqual(run.calls[1][2], 'Supersedes #5.\n\n#3 stays open because it got review feedback after this run read it. Carry that over by hand.')
 
 // The `find` CLI keeps only bot-opened, auto-doc-labeled auto-doc/cleanup-* PRs
 // (stub gh serving the API projection), and writes them for the close step.
@@ -360,7 +378,10 @@ assert.deepStrictEqual(run.calls.map(c => c.slice(0, 2)), [['close', 3], ['appen
 			env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}`, GITHUB_REPOSITORY: 'o/r', BASE_BRANCH: 'main', GITHUB_OUTPUT: out },
 			stdio: 'ignore',
 		})
-		assert.strictEqual(fs.readFileSync(out, 'utf-8'), 'numbers=12\n')
+		// since is when the agent got the feedback; close keeps PRs reviewed after it.
+		const [numbers, since] = fs.readFileSync(out, 'utf-8').split('\n')
+		assert.strictEqual(numbers, 'numbers=12')
+		assert.ok(Math.abs(Date.parse(since.replace(/^since=/, '')) - Date.now()) < 60_000, since)
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true })
 	}

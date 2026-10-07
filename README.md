@@ -260,15 +260,27 @@ once a newer one merges, and its review runs keep the auto-doc pin it was last
 built with, so the responder can't act on it. So each run starts fresh from the
 base branch and replaces any cleanup PR still open (bot-opened, labeled
 `auto-doc`, from an `auto-doc/cleanup-*` branch; every one of them if there are
-several). Before editing, the agent reads those PRs' review feedback. It won't
-re-propose a change someone reverted or rejected there, and it carries forward
-feedback nobody acted on yet. Once its own PR is open, the workflow comments on
-each old PR with a link and closes it, and adds `Supersedes #N` to the new PR's
-body. The old branch is kept, so a closed PR can be reopened. An old PR stays
-open when the run opens no PR (including a skipped week), and when someone
-pushed a commit of their own to it (merging the base branch in doesn't count);
-the new PR's body says so. A PR that fails to close is noted in the new PR's
-body and fails the run, after the review is recorded.
+several).
+
+Before editing, the agent reads those PRs' review feedback from repo owners,
+members, and collaborators. The prompt asks it to skip changes someone reverted
+or rejected there, to keep wording the responder already changed at someone's
+request, and to carry forward feedback nobody acted on yet. That's the agent's
+judgment, not a check, and the same goes for skipping `AUTO_DOC_IGNORE_AUTHORS`.
+
+Once its own PR is open, the workflow comments on each old PR with a link and
+closes it, and adds `Supersedes #N` to the new PR's body. The old branch is
+kept, so a closed PR can be reopened. An old PR stays open, and the new PR's
+body says why, when:
+
+- someone pushed a commit of their own to it. Merging the base branch in
+  doesn't count, and a person's edits inside such a merge's conflict
+  resolution aren't detected;
+- someone commented or reviewed after the run read its feedback.
+
+It also stays open, untouched, when the run opens no PR (including a skipped
+week) and when the lookup before the agent fails. A PR that fails to close is
+noted in the new PR's body and fails the run, after the review is recorded.
 
 **A middle setting, not aggressive.** It resolves contradictions, cuts genuine
 bloat and obsolete rules, and tightens wording for the agents that read these

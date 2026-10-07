@@ -10,7 +10,8 @@
 # A new cleanup PR supersedes any still-open one: the agent first carries that
 # PR's unaddressed review feedback forward, and once its own PR is open the
 # workflow closes the old one with a link. An old PR stays open when this run
-# opens nothing, or when a person has pushed commits to it.
+# opens nothing, when a person has pushed commits to it, or when it got feedback
+# after the agent read it.
 #
 # A scheduled run skips before the agent starts when nothing but cleanup PRs
 # has landed on the base branch since the last successful cleanup. The last
@@ -219,10 +220,12 @@ jobs:
 
       # After recording, so a failed close fails the run without making next
       # week review the same base again. GITHUB_TOKEN, so the link comment
-      # doesn't trigger respond.yml.
+      # doesn't trigger respond.yml. SINCE keeps open any PR that got feedback
+      # after find ran, which the agent may not have seen.
       - name: Close superseded cleanup PRs
         if: ${{ steps.previous.outputs.numbers != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PREVIOUS: ${{ steps.previous.outputs.numbers }}
+          SINCE: ${{ steps.previous.outputs.since }}
         run: node _auto-doc/scripts/cleanup-supersede.js close
