@@ -28,7 +28,7 @@ on:
       auto-doc-ref:
         description: Ref of momentumdash/auto-doc to run. Keep in sync with the ref you call this workflow at.
         type: string
-        default: v1
+        default: v2
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: OAuth token for claude-code-action.

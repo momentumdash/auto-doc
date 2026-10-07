@@ -11,7 +11,9 @@ on:
 
 jobs:
   extract:
-    uses: momentumdash/auto-doc/.github/workflows/extract.yml@v1
+    uses: momentumdash/auto-doc/.github/workflows/extract.yml@v2
+    with:
+      auto-doc-ref: v2 # Keep equal to the @ref on the uses line above.
     # Declared here, not just in the called workflow: a reusable workflow
     # cannot grant its job more than the caller's GITHUB_TOKEN already has,
     # so a repo defaulting to read-only would silently cap these.

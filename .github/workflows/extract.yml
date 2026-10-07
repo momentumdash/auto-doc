@@ -20,7 +20,7 @@ on:
       auto-doc-ref:
         description: Ref of momentumdash/auto-doc to run. Keep in sync with the ref you call this workflow at.
         type: string
-        default: v1
+        default: v2
     secrets:
       ANTHROPIC_API_KEY:
         description: Anthropic API key for the classification calls.

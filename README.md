@@ -70,7 +70,8 @@ on:
   issue_comment: { types: [created, edited] }
 jobs:
   extract:
-    uses: momentumdash/auto-doc/.github/workflows/extract.yml@v1
+    uses: momentumdash/auto-doc/.github/workflows/extract.yml@v2
+    with: { auto-doc-ref: v2 }
     permissions:
       contents: read
       pull-requests: write
@@ -88,7 +89,8 @@ on:
   pull_request: { types: [closed] }
 jobs:
   integrate:
-    uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v1
+    uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v2
+    with: { auto-doc-ref: v2 }
     permissions:
       contents: write
       pull-requests: write
@@ -109,7 +111,8 @@ on:
   workflow_dispatch:
 jobs:
   cleanup:
-    uses: momentumdash/auto-doc/.github/workflows/cleanup.yml@v1
+    uses: momentumdash/auto-doc/.github/workflows/cleanup.yml@v2
+    with: { auto-doc-ref: v2 }
     permissions:
       contents: write
       pull-requests: write
@@ -129,7 +132,8 @@ on:
   issue_comment: { types: [created] }
 jobs:
   respond:
-    uses: momentumdash/auto-doc/.github/workflows/respond.yml@v1
+    uses: momentumdash/auto-doc/.github/workflows/respond.yml@v2
+    with: { auto-doc-ref: v2 }
     permissions:
       contents: write
       pull-requests: write
@@ -204,9 +208,10 @@ many review comments.
 
 ## Inputs
 
-Every workflow takes `auto-doc-ref` (default `v1`) — the ref of this repo whose
-scripts get checked out. Keep it in sync with the ref you call at; only matters
-if you pin a SHA instead of the floating `v1` tag.
+Every workflow takes `auto-doc-ref` (default `v2`) — the ref of this repo whose
+scripts get checked out. Callers pin the floating major tag, `@v2` with
+`auto-doc-ref: v2`, so a release never needs a change in the calling repos. Keep
+the two equal; the input only has to differ if you pin a SHA instead.
 
 `integrate.yml` and `cleanup.yml` also take:
 
@@ -403,15 +408,15 @@ doc PR body. This allowlist lives in the prompt, not in code; see
 
 **Never use `secrets: inherit` to call these.** Inherit passes the caller's
 *entire* secret set, not just the secrets the called workflow declares. This
-workflow is defined in a public repo behind a movable `v1` tag, so anyone who
+workflow is defined in a public repo behind a movable `v2` tag, so anyone who
 can push here could repoint the tag and receive every secret the calling repo
 holds — release signing keys, store credentials, deploy tokens. The examples
 name the three secrets explicitly; keep it that way.
 
-**Protect the `v1` tag, or pin callers to a SHA.** `AUTO_DOC_APP_PRIVATE_KEY`
-is an org-wide credential, so whatever `v1` resolves to at run time is trusted
-with it. A tag ruleset that blocks non-admin updates to `v1` restores roughly
-the protection the code had when it lived inside a branch-protected repo.
+**Protect the `v2` tag, or pin callers to a SHA.** `AUTO_DOC_APP_PRIVATE_KEY`
+is an org-wide credential, so whatever `v2` resolves to at run time is trusted
+with it. A tag ruleset that restricts who can move `v2` restores roughly the
+protection the code had when it lived inside a branch-protected repo.
 
 **The extractor never checks out the calling repo.** It only talks to the API,
 so no code from a PR under review is executed. The integrator does check out —
@@ -462,44 +467,40 @@ ask for an edit, not just propose one.
 
 ## Releasing
 
-Callers reference the floating `v1` tag, and a ruleset on `refs/tags/v*` blocks
-updates, deletions and force pushes. With no bypass actors configured that holds
-for everyone, deliberately: whatever `v1` resolves to at run time cannot be
-repointed by anyone with push access. `v1` is what receives
-`AUTO_DOC_APP_PRIVATE_KEY`, an org-wide credential.
+Callers reference the floating major tag: `@v2` with `auto-doc-ref: v2`. To
+release, merge to `main` and push a `v2.x.y` tag on the merged commit:
 
-That means moving `v1` is a deliberate act, not a `git push -f`:
+```sh
+git fetch origin main
+git tag v2.3.0 origin/main
+git push origin v2.3.0
+```
 
-1. Merge the change to `main`.
-2. Settings → Rules → `protect release tags` → set enforcement to **Disabled**.
-3. Tag the merged commit explicitly — `git tag -f v1` would use whatever your
-   local `HEAD` happens to be, which is how `v1` ends up pointing at unrelated
-   code:
-   ```sh
-   git fetch origin main
-   git tag -f v1 origin/main
-   git push -f origin v1
-   ```
-4. Set enforcement back to **Active**, then verify the whole policy rather than
-   just that a ruleset exists — enforcement alone doesn't tell you the pattern
-   or the rules survived an edit:
-   ```sh
-   id=$(gh api repos/momentumdash/auto-doc/rulesets --jq '.[] | select(.target=="tag") | .id')
-   gh api repos/momentumdash/auto-doc/rulesets/$id --jq \
-     '{enforcement, include: .conditions.ref_name.include, rules: [.rules[].type] | sort,
-       bypass: (.bypass_actors // [] | map("\(.actor_type):\(.bypass_mode)"))}'
-   ```
-   Expect `enforcement: "active"`, `include: ["refs/tags/v*"]` and
-   `rules: ["deletion","non_fast_forward","update"]`.
+[`move-major-tag.yml`](.github/workflows/move-major-tag.yml) then force-moves
+`v2` to that commit, and every caller picks it up on its next run. Only
+three-number tags (`v2.3.0`) move the major tag; a prerelease like `v2.3.0-rc1`
+doesn't. A breaking change gets a new major (`v3.0.0`, then `v3`), and callers
+move to `@v3` deliberately.
 
-A repository-admin bypass actor removes steps 2 and 4 at the cost of making the
-protection standing-optional rather than default-on.
+To roll back, move `v2` to the previous release by hand:
 
-Adding a repository-admin bypass would remove those two clicks, at the cost of
-making the protection standing-optional rather than default-on. Not worth it —
-step 3 happens rarely, and the window in step 2 is short and chosen.
+```sh
+git tag -f v2 v2.2.0
+git push -f origin v2
+```
 
-Docs-only changes don't need any of this: the README isn't read at run time.
+`v2` is what receives `AUTO_DOC_APP_PRIVATE_KEY`, an org-wide credential, so the
+`protect release tags` ruleset on `refs/tags/v*` has to let the release workflow's
+identity (and whoever rolls back) update `v2`, while still blocking
+everyone else. Check the policy after any edit, since enforcement alone doesn't
+show that the pattern or rules survived:
+
+```sh
+id=$(gh api repos/momentumdash/auto-doc/rulesets --jq '.[] | select(.target=="tag") | .id')
+gh api repos/momentumdash/auto-doc/rulesets/$id --jq \
+  '{enforcement, include: .conditions.ref_name.include, rules: [.rules[].type] | sort,
+    bypass: (.bypass_actors // [] | map("\(.actor_type):\(.bypass_mode)"))}'
+```
 
 ## Development
 
