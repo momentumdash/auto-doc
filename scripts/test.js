@@ -174,6 +174,16 @@ const prompts = {
 assert.match(prompts.cleanup, /pullRequest\(number:3\)[^\n]*\n[^\n]*pullRequest\(number:5\)/)
 assert.match(prompts.cleanup, /automation logins \(case-insensitive\): flarpgpt/)
 assert.doesNotMatch(cleanupPrompt({ ...ctx, supersedes: [] }), /pullRequest\(number:|Carried forward/)
+// Feedback counts only from people with write access, as respond.yml requires,
+// on every node the query returns (comments, reviews, thread comments).
+assert.strictEqual(prompts.cleanup.match(/author\{ __typename login \} authorAssociation/g)?.length, 6)
+assert.match(prompts.cleanup, /`authorAssociation` is `OWNER`, `MEMBER`, or `COLLABORATOR`/)
+// The newest feedback is the most likely unacted, so a cap drops the oldest.
+assert.doesNotMatch(prompts.cleanup, /\(first:\d+\)/)
+// marketing-site#828: Dace (MEMBER) asked for a change, the bot applied it and
+// the thread was resolved. That's neither a revert nor unacted feedback, so it
+// needs its own rule or the new run re-proposes the original wording.
+assert.match(prompts.cleanup, /A resolved thread where a bot replied after the person's request means the bot applied it\. The person's requested wording stands/)
 // Redirects with or without spaces (not 2>&1, ->, =>), heredocs, process
 // substitution, ANSI-C quoting, and tee.
 const DENIED_SHELL = [/\$\(/, /"\$/, /\$[A-Za-z_{']/, / >>? /, /(^|[^-=<\s])\s*>>?(?!&)\S/, /<</, /<\(/, /\|\s*tee\b/]
@@ -218,6 +228,17 @@ assert.match(
 	runBuild(['respond'], { PR_NUMBER: '1', REPO_OWNER: 'o', REPO_NAME: 'r', EVENT_NAME: 'pull_request_review', REVIEW_ID: '9' }),
 	/NOOP — [^\n]*still reply/
 )
+// The cleanup env wiring end to end: SUPERSEDES keeps only PR numbers, and the
+// ignore list reaches the feedback filter.
+const supersedeRender = runBuild(['cleanup'], { REPO_OWNER: 'o', REPO_NAME: 'r', BASE_BRANCH: 'main', SUPERSEDES: '3 x5', AUTO_DOC_IGNORE_AUTHORS: 'Bot1' })
+assert.match(supersedeRender, /pullRequest\(number:3\)/)
+assert.match(supersedeRender, /automation logins \(case-insensitive\): bot1/)
+assert.doesNotMatch(supersedeRender, /x5/)
+// And cleanup.yml feeds find's output to the prompt and to the close step.
+const cleanupYml = fs.readFileSync(path.join(import.meta.dirname, '../.github/workflows/cleanup.yml'), 'utf-8')
+assert.match(cleanupYml, /id: previous\n[^]*?run: node _auto-doc\/scripts\/cleanup-supersede\.js find\n/)
+assert.match(cleanupYml, /^ +SUPERSEDES: \$\{\{ steps\.previous\.outputs\.numbers \}\}$/m)
+assert.match(cleanupYml, /^ +PREVIOUS: \$\{\{ steps\.previous\.outputs\.numbers \}\}\n +run: node _auto-doc\/scripts\/cleanup-supersede\.js close$/m)
 assert.throws(() => runBuild(['bogus']), 'unknown mode must exit non-zero')
 assert.throws(() => runBuild(['respond'], { REPO_OWNER: 'o', REPO_NAME: 'r' }), 'respond without PR_NUMBER must exit non-zero')
 
