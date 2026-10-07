@@ -479,7 +479,9 @@ git push origin v2.3.0
 [`move-major-tag.yml`](.github/workflows/move-major-tag.yml) then force-moves
 `v2` to that commit, and every caller picks it up on its next run. Only
 three-number tags (`v2.3.0`) move the major tag; a prerelease like `v2.3.0-rc1`
-doesn't. A breaking change gets a new major (`v3.0.0`, then `v3`), and callers
+doesn't. The workflow refuses to move `v2` unless the release tag is on `main`
+and `v2` is an ancestor of it (so out-of-order tagging can't move it backwards).
+A breaking change gets a new major (`v3.0.0`, then `v3`), and callers
 move to `@v3` deliberately.
 
 To roll back, move `v2` to the previous release by hand:
