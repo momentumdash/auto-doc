@@ -276,7 +276,8 @@ body says why, when:
 - someone pushed a commit of their own to it. Merging the base branch in
   doesn't count, and a person's edits inside such a merge's conflict
   resolution aren't detected;
-- someone commented or reviewed after the run read its feedback.
+- an owner, member, or collaborator (minus `AUTO_DOC_IGNORE_AUTHORS`)
+  commented or submitted a review after this run started.
 
 It also stays open, untouched, when the run opens no PR (including a skipped
 week) and when the lookup before the agent fails. A PR that fails to close is

@@ -242,6 +242,9 @@ const closeStep = cleanupYml.match(/- name: Close superseded cleanup PRs\n[^]*?r
 assert.ok(closeStep, 'cleanup.yml has no close step')
 assert.match(closeStep, /^ +PREVIOUS: \$\{\{ steps\.previous\.outputs\.numbers \}\}$/m)
 assert.match(closeStep, /^ +SINCE: \$\{\{ steps\.previous\.outputs\.since \}\}$/m)
+assert.match(closeStep, /^ +AUTO_DOC_IGNORE_AUTHORS: \$\{\{ vars\.AUTO_DOC_IGNORE_AUTHORS \}\}$/m)
+// Runs whenever find listed PRs, and only after the record step succeeded.
+assert.match(closeStep, /^ +if: \$\{\{ steps\.previous\.outputs\.numbers != '' \}\}$/m)
 assert.throws(() => runBuild(['bogus']), 'unknown mode must exit non-zero')
 assert.throws(() => runBuild(['respond'], { REPO_OWNER: 'o', REPO_NAME: 'r' }), 'respond without PR_NUMBER must exit non-zero')
 
@@ -304,7 +307,7 @@ const fakeGh = ({ open, commits = {}, feedbackAt = {}, fail } = {}) => {
 }
 const supersedeWith = (previous, opts) => {
 	const fake = fakeGh(opts)
-	return { annotations: supersede(previous, SINCE, fake.api), calls: fake.calls }
+	return { annotations: supersede({ previous, since: SINCE, ignored: new Set() }, fake.api), calls: fake.calls }
 }
 
 // The happy path: the previous PR gets the link comment and closes, and the new
@@ -355,7 +358,7 @@ for (const human of [{ parents: 1, author: 'User' }, { parents: 1, author: null 
 run = supersedeWith([3], { open: [3, 7], commits: { 3: [{ parents: 1, author: 'Bot' }, { parents: 2, author: 'User' }] } })
 assert.deepStrictEqual(run.calls.map(c => c.slice(0, 2)), [['close', 3], ['appendBody', 7]])
 
-// Feedback after the agent read the PR keeps it open; feedback before doesn't.
+// Feedback after this run started keeps the PR open; feedback before doesn't.
 run = supersedeWith([3, 5], { open: [3, 5, 7], feedbackAt: { 3: ['2026-10-05T09:04:00Z'], 5: ['2026-10-05T08:59:59Z'] } })
 assert.deepStrictEqual(run.calls.map(c => c.slice(0, 2)), [['close', 5], ['appendBody', 7]])
 assert.strictEqual(run.calls[1][2], 'Supersedes #5.\n\n#3 stays open because it got review feedback after this run started. Carry that over by hand.')
@@ -445,10 +448,30 @@ let cli = closeCli({ reviews: [node({ submittedAt: BEFORE }), node({ submittedAt
 assert.strictEqual(cli.status, 0, cli.stdout)
 assert.deepStrictEqual(cli.calls, [['patch', 'repos/o/r/pulls/7', 'body=Weekly cleanup.\n\n#3 stays open because it got review feedback after this run started. Carry that over by hand.']])
 
-// Late activity from a bot doesn't hold the close.
-cli = closeCli({ comments: [node({ createdAt: AFTER }, { login: 'coderabbitai', type: 'Bot', assoc: 'NONE' })], reviews: [node({ submittedAt: BEFORE })] })
+// Late activity only counts from the people the agent reads: not a bot, an
+// AUTO_DOC_IGNORE_AUTHORS login, or someone without write access.
+cli = closeCli(
+	{
+		comments: [
+			node({ createdAt: AFTER }, { login: 'coderabbitai', type: 'Bot', assoc: 'NONE' }),
+			node({ createdAt: AFTER }, { login: 'flarpGPT' }),
+			node({ createdAt: AFTER }, { login: 'drive-by', assoc: 'NONE' }),
+		],
+		reviews: [node({ submittedAt: BEFORE })],
+	},
+	{ AUTO_DOC_IGNORE_AUTHORS: 'FlarpGPT' }
+)
 assert.strictEqual(cli.status, 0, cli.stdout)
 assert.deepStrictEqual(cli.calls, [['close', '3'], ['patch', 'repos/o/r/pulls/7', 'body=Weekly cleanup.\n\nSupersedes #3.']])
+
+// A missing or unparseable SINCE can't tell old feedback from new, so it keeps
+// everything open and fails the step.
+for (const since of ['', 'soon']) {
+	cli = closeCli({}, { SINCE: since })
+	assert.strictEqual(cli.status, 1, cli.stdout)
+	assert.match(cli.stdout, /^::error::SINCE is not a timestamp \((|soon)\), so #3 stays open\.$/m)
+	assert.deepStrictEqual(cli.calls, [])
+}
 
 // The CLI against a throwaway repo with a local bare "origin", and a stub `gh`
 // that serves the fixtures above (as already-projected jq output, so the jq

@@ -8,6 +8,7 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import { isCleanupPr } from './cleanup-gate.js'
+import { ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
 
 // A merge commit only syncs the base in (someone working around a stale PR),
 // so it carries no edit the new PR would lose. ponytail: a person's edits inside
@@ -15,17 +16,27 @@ import { isCleanupPr } from './cleanup-gate.js'
 // parents if that ever bites. A commit with no linked account counts as a person's.
 const isHumanCommit = c => c.parents < 2 && c.author !== 'Bot'
 
+// The same people whose feedback the cleanup agent reads (prompts.js).
+const WRITE_ACCESS = ['OWNER', 'MEMBER', 'COLLABORATOR']
+
 /**
  * Closes every PR in `previous` in favour of the newest cleanup PR opened since,
- * and notes the outcome in that PR's body. `since` is when the agent was handed
- * their feedback. Returns workflow annotations for the step log.
+ * and notes the outcome in that PR's body. `since` is when this run started;
+ * `ignored` is the AUTO_DOC_IGNORE_AUTHORS set. Returns workflow annotations
+ * for the step log.
  */
-export function supersede(previous, since, api) {
+export function supersede({ previous, since, ignored }, api) {
+	const list = previous.map(n => `#${n}`).join(', ')
+	const sinceMs = Date.parse(since)
+	if (Number.isNaN(sinceMs)) return [`::error::SINCE is not a timestamp (${since}), so ${list} stays open.`]
+	const isLateFeedback = f =>
+		Date.parse(f.at) > sinceMs && WRITE_ACCESS.includes(f.assoc) && !isIgnoredAuthor({ type: f.type, login: f.login }, ignored)
+
 	const newPr = api
 		.openCleanupPrs()
 		.filter(n => n > Math.max(...previous))
 		.at(-1)
-	if (!newPr) return [`::warning::No new cleanup PR found, so ${previous.map(n => `#${n}`).join(', ')} stays open.`]
+	if (!newPr) return [`::warning::No new cleanup PR found, so ${list} stays open.`]
 
 	const closed = []
 	const notes = []
@@ -35,7 +46,7 @@ export function supersede(previous, since, api) {
 			if (!api.isOpen(n)) continue
 			if (api.commits(n).some(isHumanCommit)) {
 				notes.push(`#${n} stays open because it has commits from a person. Reconcile it with this PR by hand.`)
-			} else if (api.feedback(n).some(f => f.type === 'User' && Date.parse(f.at) > Date.parse(since))) {
+			} else if (api.feedback(n).some(isLateFeedback)) {
 				notes.push(`#${n} stays open because it got review feedback after this run started. Carry that over by hand.`)
 			} else {
 				api.close(n, `Superseded by #${newPr}, which re-runs the cleanup against the current base branch and carries this PR's open feedback forward. Feedback left here from now on won't be read.`)
@@ -127,7 +138,7 @@ if (import.meta.filename === process.argv[1]) {
 		fs.appendFileSync(process.env.GITHUB_OUTPUT, `numbers=${numbers.join(' ')}\nsince=${new Date().toISOString()}\n`)
 	} else if (process.argv[2] === 'close') {
 		const previous = (process.env.PREVIOUS || '').split(' ').filter(Boolean).map(Number)
-		const annotations = supersede(previous, process.env.SINCE, api)
+		const annotations = supersede({ previous, since: process.env.SINCE, ignored: ignoredAuthorLogins() }, api)
 		for (const line of annotations) console.log(line)
 		if (annotations.some(line => line.startsWith('::error::'))) process.exit(1)
 	} else {
