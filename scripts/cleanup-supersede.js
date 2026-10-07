@@ -35,8 +35,8 @@ export function supersede(previous, since, api) {
 			if (!api.isOpen(n)) continue
 			if (api.commits(n).some(isHumanCommit)) {
 				notes.push(`#${n} stays open because it has commits from a person. Reconcile it with this PR by hand.`)
-			} else if (api.humanFeedbackTimes(n).some(at => Date.parse(at) > Date.parse(since))) {
-				notes.push(`#${n} stays open because it got review feedback after this run read it. Carry that over by hand.`)
+			} else if (api.feedback(n).some(f => f.type === 'User' && Date.parse(f.at) > Date.parse(since))) {
+				notes.push(`#${n} stays open because it got review feedback after this run started. Carry that over by hand.`)
 			} else {
 				api.close(n, `Superseded by #${newPr}, which re-runs the cleanup against the current base branch and carries this PR's open feedback forward. Feedback left here from now on won't be read.`)
 				closed.push(n)
@@ -84,24 +84,27 @@ function ghApi() {
 					'.[] | {parents: (.parents | length), author: .author.type}',
 				])
 			),
-		// When people commented or reviewed, newest last. Inline comments and
-		// replies each arrive as a review, so two connections cover it all.
-		humanFeedbackTimes: n =>
-			gh([
-				'api',
-				'graphql',
-				'-f',
-				'query=query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ comments(last:50){ nodes{ createdAt author{ __typename } } } reviews(last:50){ nodes{ createdAt author{ __typename } } } } } }',
-				'-f',
-				`owner=${repo.split('/')[0]}`,
-				'-f',
-				`name=${repo.split('/')[1]}`,
-				'-F',
-				`number=${n}`,
-				'--jq',
-				'.data.repository.pullRequest | (.comments.nodes[], .reviews.nodes[]) | select(.author.__typename == "User") | .createdAt',
-			])
-				.split('\n'),
+		// Comments and submitted reviews as {at, login, type, assoc}. Inline
+		// comments and replies each arrive as a review, so two connections cover
+		// it all. A review's createdAt is when it was started, possibly hours
+		// before it was submitted.
+		feedback: n =>
+			ndjson(
+				gh([
+					'api',
+					'graphql',
+					'-f',
+					'query=query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ comments(last:50){ nodes{ createdAt authorAssociation author{ __typename login } } } reviews(last:50){ nodes{ submittedAt authorAssociation author{ __typename login } } } } } }',
+					'-f',
+					`owner=${repo.split('/')[0]}`,
+					'-f',
+					`name=${repo.split('/')[1]}`,
+					'-F',
+					`number=${n}`,
+					'--jq',
+					'.data.repository.pullRequest | (.comments.nodes[] | .at = .createdAt), (.reviews.nodes[] | .at = .submittedAt) | {at, login: .author.login, type: .author.__typename, assoc: .authorAssociation}',
+					])
+				),
 		close: (n, comment) => gh(['pr', 'close', `${n}`, '--repo', repo, '--comment', comment]),
 		appendBody: (n, text) => {
 			const body = gh(['api', `repos/${repo}/pulls/${n}`, '--jq', '.body // ""'])

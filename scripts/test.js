@@ -5,7 +5,7 @@
 // the responder's 👀 targets and run verdict, and the cleanup gate and
 // supersede steps. Run with: node test.js
 import assert from 'node:assert'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -293,7 +293,7 @@ const fakeGh = ({ open, commits = {}, feedbackAt = {}, fail } = {}) => {
 			openCleanupPrs: () => [...open],
 			isOpen: call('isOpen', n => state.has(n)),
 			commits: call('commits', n => commits[n] ?? [{ parents: 1, author: 'Bot' }]),
-			humanFeedbackTimes: call('humanFeedbackTimes', n => feedbackAt[n] ?? []),
+			feedback: call('feedback', n => (feedbackAt[n] ?? []).map(at => ({ at, login: 'dace', type: 'User', assoc: 'MEMBER' }))),
 			close: call('close', (n, comment) => {
 				state.delete(n)
 				calls.push(['close', n, comment])
@@ -333,7 +333,7 @@ assert.deepStrictEqual(supersedeWith([3], { open: [7] }), { annotations: [], cal
 
 // Any failing call for one PR is reported, in the new PR and as an error, and
 // the other PRs still get handled.
-for (const fail of ['isOpen', 'commits', 'humanFeedbackTimes', 'close']) {
+for (const fail of ['isOpen', 'commits', 'feedback', 'close']) {
 	run = supersedeWith([3], { open: [3, 7], fail })
 	assert.deepStrictEqual(run, {
 		annotations: ['::error::Could not close superseded cleanup PR #3'],
@@ -358,34 +358,97 @@ assert.deepStrictEqual(run.calls.map(c => c.slice(0, 2)), [['close', 3], ['appen
 // Feedback after the agent read the PR keeps it open; feedback before doesn't.
 run = supersedeWith([3, 5], { open: [3, 5, 7], feedbackAt: { 3: ['2026-10-05T09:04:00Z'], 5: ['2026-10-05T08:59:59Z'] } })
 assert.deepStrictEqual(run.calls.map(c => c.slice(0, 2)), [['close', 5], ['appendBody', 7]])
-assert.strictEqual(run.calls[1][2], 'Supersedes #5.\n\n#3 stays open because it got review feedback after this run read it. Carry that over by hand.')
+assert.strictEqual(run.calls[1][2], 'Supersedes #5.\n\n#3 stays open because it got review feedback after this run started. Carry that over by hand.')
 
-// The `find` CLI keeps only bot-opened, auto-doc-labeled auto-doc/cleanup-* PRs
-// (stub gh serving the API projection), and writes them for the close step.
-{
+// The CLI against a stub `gh` that serves raw API JSON and runs the caller's
+// real --jq through jq, so the projections run as they would on GitHub.
+// GraphQL connections are sliced by their first:/last: arguments; writes (pr
+// close, PATCH) are logged instead.
+const STUB_GH = `#!/usr/bin/env node
+const fs = require('node:fs'), { execFileSync } = require('node:child_process')
+const args = process.argv.slice(2)
+const fx = JSON.parse(fs.readFileSync(process.env.GH_STUB_FIXTURES, 'utf-8'))
+const log = line => fs.appendFileSync(process.env.GH_STUB_FIXTURES + '.log', JSON.stringify(line) + '\\n')
+const flag = name => args[args.indexOf(name) + 1]
+if (args[0] === 'pr' && args[1] === 'close') { log(['close', args[2]]); process.exit(0) }
+const endpoint = args.find((a, i) => i > 0 && !a.startsWith('-') && !['-f', '-F', '-X', '--jq'].includes(args[i - 1]))
+if (args.includes('PATCH')) { log(['patch', endpoint, flag('-f')]); process.exit(0) }
+let raw = fx[endpoint.replace(/\\?.*/, '')]
+if (endpoint === 'graphql') {
+	const pr = fx.graphql[flag('-F').replace('number=', '')]
+	for (const [, conn, end, k] of flag('-f').matchAll(/(\\w+)\\((first|last):(\\d+)\\)/g))
+		pr[conn].nodes = end === 'first' ? pr[conn].nodes.slice(0, k) : pr[conn].nodes.slice(-k)
+	raw = { data: { repository: { pullRequest: pr } } }
+}
+process.stdout.write(execFileSync('jq', ['-r', '-c', flag('--jq')], { input: JSON.stringify(raw ?? null) }))
+`
+const runSupersedeCli = (mode, fixtures, env = {}) => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-doc-supersede-'))
 	try {
-		const listed = [
-			botPr(null, 'auto-doc/cleanup-2026-09-28'),
-			{ ...botPr(null, 'auto-doc/cleanup-2026-09-21'), user: { type: 'User' } },
-			botPr(null, 'auto-doc/pr-12'),
-			botPr(null, 'auto-doc/cleanup-2026-09-14', ['documentation']),
-		].map((pr, i) => JSON.stringify({ number: [12, 9, 8, 4][i], ...pr })).join('\n')
-		fs.writeFileSync(path.join(dir, 'gh'), `#!/bin/sh\ncat <<'EOF'\n${listed}\nEOF\n`, { mode: 0o755 })
-		const out = path.join(dir, 'out')
-		fs.writeFileSync(out, '')
-		execFileSync('node', [path.join(import.meta.dirname, 'cleanup-supersede.js'), 'find'], {
-			env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}`, GITHUB_REPOSITORY: 'o/r', BASE_BRANCH: 'main', GITHUB_OUTPUT: out },
-			stdio: 'ignore',
+		fs.writeFileSync(path.join(dir, 'gh'), STUB_GH, { mode: 0o755 })
+		fs.writeFileSync(path.join(dir, 'fixtures.json'), JSON.stringify(fixtures))
+		fs.writeFileSync(path.join(dir, 'out'), '')
+		const result = spawnSync('node', [path.join(import.meta.dirname, 'cleanup-supersede.js'), mode], {
+			encoding: 'utf-8',
+			env: {
+				...process.env,
+				PATH: `${dir}${path.delimiter}${process.env.PATH}`,
+				GH_STUB_FIXTURES: path.join(dir, 'fixtures.json'),
+				GITHUB_REPOSITORY: 'o/r',
+				BASE_BRANCH: 'main',
+				GITHUB_OUTPUT: path.join(dir, 'out'),
+				...env,
+			},
 		})
-		// since is when the agent got the feedback; close keeps PRs reviewed after it.
-		const [numbers, since] = fs.readFileSync(out, 'utf-8').split('\n')
-		assert.strictEqual(numbers, 'numbers=12')
-		assert.ok(Math.abs(Date.parse(since.replace(/^since=/, '')) - Date.now()) < 60_000, since)
+		const read = file => (fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '')
+		const calls = read(path.join(dir, 'fixtures.json.log')).split('\n').filter(Boolean).map(line => JSON.parse(line))
+		return { status: result.status, stdout: result.stdout, output: read(path.join(dir, 'out')), calls }
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true })
 	}
 }
+const rawPr = (number, ref, { type = 'Bot', labels = ['auto-doc'] } = {}) => ({ number, head: { ref }, user: { type }, labels: labels.map(name => ({ name })) })
+
+// `find` keeps only bot-opened, auto-doc-labeled auto-doc/cleanup-* PRs, and
+// writes them with the time it ran for the close step.
+{
+	const { output } = runSupersedeCli('find', {
+		'repos/o/r/pulls': [
+			rawPr(12, 'auto-doc/cleanup-2026-09-28'),
+			rawPr(9, 'auto-doc/cleanup-2026-09-21', { type: 'User' }),
+			rawPr(8, 'auto-doc/pr-12'),
+			rawPr(4, 'auto-doc/cleanup-2026-09-14', { labels: ['documentation'] }),
+		],
+	})
+	const [numbers, since] = output.split('\n')
+	assert.strictEqual(numbers, 'numbers=12')
+	assert.ok(Math.abs(Date.parse(since.replace(/^since=/, '')) - Date.now()) < 60_000, since)
+}
+
+// `close` against the real feedback projection. Old PR #3, new PR #7, and the
+// run started at SINCE.
+const BEFORE = '2026-10-05T08:00:00Z'
+const AFTER = '2026-10-05T10:00:00Z'
+const node = (at, { login = 'dace', type = 'User', assoc = 'MEMBER' } = {}) => ({ authorAssociation: assoc, author: { __typename: type, login }, ...at })
+const closeFixtures = ({ comments = [], reviews = [] }) => ({
+	'repos/o/r/pulls': [rawPr(3, 'auto-doc/cleanup-2026-09-28'), rawPr(7, 'auto-doc/cleanup-2026-10-05')],
+	'repos/o/r/pulls/3': { state: 'open', body: '' },
+	'repos/o/r/pulls/7': { state: 'open', body: 'Weekly cleanup.' },
+	'repos/o/r/pulls/3/commits': [{ parents: [{}], author: { type: 'Bot' } }],
+	graphql: { 3: { comments: { nodes: comments }, reviews: { nodes: reviews } } },
+})
+const closeCli = (fixtures, env = {}) => runSupersedeCli('close', closeFixtures(fixtures), { PREVIOUS: '3', SINCE, ...env })
+
+// A review started before the run but submitted during it is new feedback, and
+// it's the newest of several.
+let cli = closeCli({ reviews: [node({ submittedAt: BEFORE }), node({ submittedAt: BEFORE }), node({ createdAt: BEFORE, submittedAt: AFTER })] })
+assert.strictEqual(cli.status, 0, cli.stdout)
+assert.deepStrictEqual(cli.calls, [['patch', 'repos/o/r/pulls/7', 'body=Weekly cleanup.\n\n#3 stays open because it got review feedback after this run started. Carry that over by hand.']])
+
+// Late activity from a bot doesn't hold the close.
+cli = closeCli({ comments: [node({ createdAt: AFTER }, { login: 'coderabbitai', type: 'Bot', assoc: 'NONE' })], reviews: [node({ submittedAt: BEFORE })] })
+assert.strictEqual(cli.status, 0, cli.stdout)
+assert.deepStrictEqual(cli.calls, [['close', '3'], ['patch', 'repos/o/r/pulls/7', 'body=Weekly cleanup.\n\nSupersedes #3.']])
 
 // The CLI against a throwaway repo with a local bare "origin", and a stub `gh`
 // that serves the fixtures above (as already-projected jq output, so the jq
