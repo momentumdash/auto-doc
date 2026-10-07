@@ -61,6 +61,10 @@ if (which === 'integrate') {
 				.split(',')
 				.map(s => s.trim())
 				.filter(login => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?$/.test(login) && !login.endsWith('-')),
+			// Open cleanup PRs this run supersedes (cleanup-supersede.js find), so
+			// the agent carries their review feedback forward.
+			supersedes: (env.SUPERSEDES || '').split(' ').filter(n => /^\d+$/.test(n)),
+			ignoreAuthors,
 		})
 	)
 } else {

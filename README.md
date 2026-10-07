@@ -172,7 +172,7 @@ Set these at the org level so new repos need nothing but the workflow files.
 | `AUTO_DOC_USE_APP` | variable | no | `'true'` to mint an App token instead of using `GITHUB_TOKEN`. |
 | `AUTO_DOC_BASE_BRANCH` | variable | no | Branch doc PRs target. Defaults to the repo's default branch. |
 | `AUTO_DOC_CLEANUP_REVIEWERS` | variable | no | Logins to request review from on the weekly cleanup PR. See [Weekly cleanup](#weekly-cleanup). |
-| `AUTO_DOC_IGNORE_AUTHORS` | variable | no | Comma-separated automation logins the bot skips: never classified by the extractor, never counted in the integrator's reaction gate, and skipped by `respond.yml`, beyond bot accounts. See [Ignored authors](#ignored-authors). |
+| `AUTO_DOC_IGNORE_AUTHORS` | variable | no | Comma-separated automation logins the bot skips: never classified by the extractor, never counted in the integrator's reaction gate, skipped by `respond.yml`, and not read as review feedback when cleanup supersedes a PR, beyond bot accounts. See [Ignored authors](#ignored-authors). |
 
 Without a GitHub App the bot posts as `github-actions[bot]`, and **doc PRs it
 opens won't trigger CI** — GitHub suppresses workflow events from
@@ -254,6 +254,34 @@ loudly rather than recording a ref. A failed run records nothing, so the next on
 runs again. A manual dispatch always
 runs, and its success resets the baseline. To force a full review on the next
 schedule, delete the ref: `git push origin :refs/auto-doc/cleanup`.
+
+**Supersedes last week's PR.** An unmerged cleanup PR goes stale: it conflicts
+once a newer one merges, and its review runs keep the auto-doc pin it was last
+built with, so the responder can't act on it. So each run starts fresh from the
+base branch and replaces any cleanup PR still open (bot-opened, labeled
+`auto-doc`, from an `auto-doc/cleanup-*` branch; every one of them if there are
+several).
+
+Before editing, the agent reads those PRs' review feedback from repo owners,
+members, and collaborators. The prompt asks it to skip changes someone reverted
+or rejected there, to keep wording the responder already changed at someone's
+request, and to carry forward feedback nobody acted on yet. That's the agent's
+judgment, not a check, and the same goes for skipping `AUTO_DOC_IGNORE_AUTHORS`.
+
+Once its own PR is open, the workflow comments on each old PR with a link and
+closes it, and adds `Supersedes #N` to the new PR's body. The old branch is
+kept, so a closed PR can be reopened. An old PR stays open, and the new PR's
+body says why, when:
+
+- someone pushed a commit of their own to it. Merging the base branch in
+  doesn't count, and a person's edits inside such a merge's conflict
+  resolution aren't detected;
+- an owner, member, or collaborator (minus `AUTO_DOC_IGNORE_AUTHORS`)
+  commented or submitted a review after this run started.
+
+It also stays open, untouched, when the run opens no PR (including a skipped
+week) and when the lookup before the agent fails. A PR that fails to close is
+noted in the new PR's body and fails the run, after the review is recorded.
 
 **A middle setting, not aggressive.** It resolves contradictions, cuts genuine
 bloat and obsolete rules, and tightens wording for the agents that read these
@@ -357,6 +385,8 @@ account (a PAT or machine user) does not, so list those logins in the
 and their comments are never classified. The same variable also gates the
 merge-time reaction check: a 👍 or 👎 from a bot account or a denylisted login
 counts as neither approval nor veto, so a bot can't cast the deciding vote.
+When cleanup supersedes an open cleanup PR, it ignores their review comments
+on that PR too.
 
 ## The rule's documentation home
 
