@@ -11,7 +11,14 @@ on:
 
 jobs:
   cleanup:
-    uses: momentumdash/auto-doc/.github/workflows/cleanup.yml@v1
+    uses: momentumdash/auto-doc/.github/workflows/cleanup.yml@v2
+    with:
+      auto-doc-ref: v2 # Keep equal to the @ref on the uses line above.
+      # base-branch defaults to the repo's default branch (override here or via the
+      # AUTO_DOC_BASE_BRANCH repo variable). reviewers is who gets requested on the
+      # cleanup PR: set it per repo (or via the AUTO_DOC_CLEANUP_REVIEWERS variable).
+      # base-branch: develop
+      # reviewers: your-github-login          # comma-separated for several
     # Declared here, not just in the called workflow: a reusable workflow
     # cannot grant its job more than the caller's GITHUB_TOKEN already has,
     # so a repo defaulting to read-only would silently cap these.
@@ -27,9 +34,3 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
       AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
-    # base-branch defaults to the repo's default branch (override here or via the
-    # AUTO_DOC_BASE_BRANCH repo variable). reviewers is who gets requested on the
-    # cleanup PR: set it per repo (or via the AUTO_DOC_CLEANUP_REVIEWERS variable).
-    # with:
-    #   base-branch: develop
-    #   reviewers: your-github-login          # comma-separated for several
