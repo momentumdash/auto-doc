@@ -364,7 +364,7 @@ none of this feeds the extractor or integrator.
 | In a comment | Effect |
 | --- | --- |
 | `/document` | Force capture — treated as high-confidence even if the classifier would have passed. |
-| `/document <text>` | Capture `<text>` verbatim as the rule, bypassing the classifier's verdict. |
+| `/document <text>` | Capture `<text>` as the rule, bypassing the classifier's verdict. The integrator works from the comment as written. |
 | `/dontdocument` | Suppress. Deletes any existing bot reply, and never calls the model. |
 
 Editing a comment reclassifies it, and the bot edits its reply in place,
@@ -429,8 +429,8 @@ but only after merge, so that code is already reviewed.
 why `buildReplyBody` strips HTML comments and collapses whitespace: GitHub
 renders `<!-- … -->` invisibly, so an unsanitized rule could show a reviewer
 something benign while the integrator reads something else. The integrator reads
-the source comment with HTML comments stripped the same way. `scripts/test.js`
-covers both.
+the source comment with HTML comments and link reference definitions (which also
+render as nothing) stripped. `scripts/test.js` covers both.
 
 **The integrator's path allowlist is prompt-enforced, not mechanical.** It runs
 with `Bash(gh:*)`, `Bash(git:*)` and a write-scoped token, so a sufficiently

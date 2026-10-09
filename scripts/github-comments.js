@@ -154,7 +154,7 @@ export function listReviewComments({ repoOwner, repoName, prNumber, reviewId }) 
 }
 
 /**
- * Strip HTML comments, which GitHub renders invisibly.
+ * Strip HTML comments and link reference definitions, which GitHub renders as nothing.
  *
  * The human 👍 is this system's only real gate: a reviewer reads a comment and
  * its proposed rule and approves them, and the integrator later acts on that
@@ -166,6 +166,7 @@ function stripHidden(text) {
 	return String(text ?? '')
 		.replace(/<!--[\s\S]*?-->/g, '')
 		.replace(/<!--|-->/g, '')
+		.replace(/^ {0,3}\[[^\]]+\]:.*$/gm, '')
 		.trim()
 }
 

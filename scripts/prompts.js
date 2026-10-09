@@ -167,7 +167,7 @@ ${reviewerStep}
 
 This is how a human keeps, drops, or adjusts each edit. For every non-trivial hunk (skip pure typo/whitespace fixes):
   a. Use the PR number from Step 5c, and its head SHA (\`gh pr view <pr-number> --json commits --jq '.commits[-1].oid'\`).
-  b. Read the addressable lines from the diff hunk headers: \`gh api --paginate repos/${ctx.repoOwner}/${ctx.repoName}/pulls/<pr-number>/files --jq '.[]|select(.filename=="<path>")|.patch'\` (paginate: the files endpoint returns 30 per page). Only new-file lines inside a hunk are addressable.
+  b. Read the addressable lines from the diff hunk headers. One call lists every file's patch: \`gh api --paginate repos/${ctx.repoOwner}/${ctx.repoName}/pulls/<pr-number>/files --jq '.[] | {filename, patch}'\` (paginate: the files endpoint returns 30 per page). Only new-file lines inside a hunk are addressable.
   c. Post an inline comment anchored to the change explaining WHY you made it (contradiction resolved, obsolete rule removed, duplication collapsed, wording tightened):
      gh api repos/${ctx.repoOwner}/${ctx.repoName}/pulls/<pr-number>/comments -X POST -F body='<why>' -F commit_id=<sha> -F path='<file>' -F line=<line> -F side=RIGHT
      Keep \`<why>\` to a single line.
