@@ -10,7 +10,7 @@ Four workflows:
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `extract.yml` | review submitted / comment created or edited | Classifies each comment with Haiku. Rule-worthy ones get a threaded bot reply carrying a `<!-- auto-doc-bot ref:N -->` marker. |
-| `integrate.yml` | PR merged | Collects marker replies with a 👍 and no 👎, decides covered / contradicts / missing per rule, and opens one doc PR. |
+| `integrate.yml` | PR merged | A script collects marker replies with a 👍 and no 👎. If there are any, an agent decides covered / contradicts / missing per rule and opens one doc PR. |
 | `cleanup.yml` | weekly schedule | Tidies the CLAUDE.md tree and the guides it links to (contradictions, bloat, drift), opens one doc PR, and comments inline on each change. See [Weekly cleanup](#weekly-cleanup). |
 | `respond.yml` | comment / review on an auto-doc PR | Acts on a human's feedback on a doc PR the bot opened: reverts a change, applies a requested edit, or replies. See [Responding to feedback](#responding-to-feedback). |
 

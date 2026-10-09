@@ -20,8 +20,7 @@ function ghJson(args) {
 
 const reviewCommentsPath = (o, r, pr) => `repos/${o}/${r}/pulls/${pr}/comments`
 const issueCommentsPath = (o, r, pr) => `repos/${o}/${r}/issues/${pr}/comments`
-const reviewCommentPath = (o, r, id) => `repos/${o}/${r}/pulls/comments/${id}`
-const issueCommentPath = (o, r, id) => `repos/${o}/${r}/issues/comments/${id}`
+const commentPath = (o, r, id, isLineAnchored) => `repos/${o}/${r}/${isLineAnchored ? 'pulls' : 'issues'}/comments/${id}`
 
 function ndjson(out) {
 	return out
@@ -83,9 +82,7 @@ export function lookupReply(map, { sourceCommentId, isLineAnchored }) {
  * superseding post).
  */
 export function validationReactionCount({ repoOwner, repoName, commentId, isLineAnchored }) {
-	const base = isLineAnchored
-		? reviewCommentPath(repoOwner, repoName, commentId)
-		: issueCommentPath(repoOwner, repoName, commentId)
+	const base = commentPath(repoOwner, repoName, commentId, isLineAnchored)
 	// --slurp wraps each page in an outer array; `add` flattens before length so
 	// a >30-reaction (multi-page) comment doesn't emit one count per page.
 	const reactions = ghJson([
@@ -101,16 +98,24 @@ export function validationReactionCount({ repoOwner, repoName, commentId, isLine
 
 /**
  * The marker replies a person approved: at least one 👍 and no 👎, counting
- * only reactions from authors isIgnoredAuthor lets through. Each comes with its
- * source comment, and a reply whose source was deleted is dropped. `comments`
- * holds both streams, each comment tagged `isLineAnchored`.
+ * only reactions from authors isIgnoredAuthor lets through. Only the bot's own
+ * replies count, and only the newest per source: a superseding reply restarts
+ * the vote, since the 👍 on the old one was for the old wording. A reply whose
+ * source was deleted is dropped. `comments` holds both streams, oldest first,
+ * each tagged `isLineAnchored`.
  */
 export function approvedRules(comments, reactionsFor, ignored) {
-	const byId = new Map(comments.map(c => [`${c.isLineAnchored}:${c.id}`, c]))
-	return comments.flatMap(reply => {
-		const ref = reply.body.startsWith(BOT_MARKER_PREFIX) && reply.body.match(/ref:(\d+) -->/)
-		const source = ref && byId.get(`${reply.isLineAnchored}:${ref[1]}`)
-		if (!source) return []
+	const key = (isLineAnchored, id) => `${isLineAnchored}:${id}`
+	const byId = new Map(comments.map(c => [key(c.isLineAnchored, c.id), c]))
+	const newest = new Map()
+	for (const c of comments) {
+		const ref = c.user.type === 'Bot' && c.body.startsWith(BOT_MARKER_PREFIX) && c.body.match(/ref:(\d+) -->/)
+		if (ref) newest.set(key(c.isLineAnchored, ref[1]), c)
+	}
+	return [...newest].flatMap(([sourceKey, reply]) => {
+		const source = byId.get(sourceKey)
+		// plusOnes is the list endpoint's 👍 total; with none, there's nothing to fetch.
+		if (!source || reply.plusOnes === 0) return []
 		const votes = reactionsFor(reply)
 			.filter(r => !isIgnoredAuthor(r.user, ignored))
 			.map(r => r.content)
@@ -119,16 +124,15 @@ export function approvedRules(comments, reactionsFor, ignored) {
 	})
 }
 
-/** approvedRules for a PR: two list calls, then one reactions call per marker reply. */
+/** approvedRules for a PR: two list calls, then a reactions call per marker reply that has a 👍. */
 export function fetchApprovedRules({ repoOwner, repoName, prNumber }, ignored) {
+	const user = '{login: .user.login, type: .user.type}'
 	const list = (endpoint, isLineAnchored) =>
-		ndjson(gh(['api', endpoint, '--paginate', '--jq', '.[] | {id, body, html_url, user: {login: .user.login}}'])).map(
+		ndjson(gh(['api', endpoint, '--paginate', '--jq', `.[] | {id, body, html_url, user: ${user}, plusOnes: .reactions["+1"]}`])).map(
 			c => ({ ...c, isLineAnchored })
 		)
-	const reactionsFor = ({ id, isLineAnchored }) => {
-		const base = isLineAnchored ? reviewCommentPath(repoOwner, repoName, id) : issueCommentPath(repoOwner, repoName, id)
-		return ndjson(gh(['api', `${base}/reactions`, '--paginate', '--jq', '.[] | {content, user: {login: .user.login, type: .user.type}}']))
-	}
+	const reactionsFor = ({ id, isLineAnchored }) =>
+		ndjson(gh(['api', `${commentPath(repoOwner, repoName, id, isLineAnchored)}/reactions`, '--paginate', '--jq', `.[] | {content, user: ${user}}`]))
 	const comments = [
 		...list(reviewCommentsPath(repoOwner, repoName, prNumber), true),
 		...list(issueCommentsPath(repoOwner, repoName, prNumber), false),
@@ -167,17 +171,13 @@ export function postReply({ repoOwner, repoName, prNumber, sourceCommentId, isLi
 
 /** Edit an existing bot reply in place. */
 export function editReply({ repoOwner, repoName, commentId, isLineAnchored, body }) {
-	const base = isLineAnchored
-		? reviewCommentPath(repoOwner, repoName, commentId)
-		: issueCommentPath(repoOwner, repoName, commentId)
+	const base = commentPath(repoOwner, repoName, commentId, isLineAnchored)
 	withBodyFile(body, file => gh(['api', base, '-X', 'PATCH', '-F', `body=@${file}`]))
 }
 
 /** Delete an existing bot reply. */
 export function deleteReply({ repoOwner, repoName, commentId, isLineAnchored }) {
-	const base = isLineAnchored
-		? reviewCommentPath(repoOwner, repoName, commentId)
-		: issueCommentPath(repoOwner, repoName, commentId)
+	const base = commentPath(repoOwner, repoName, commentId, isLineAnchored)
 	gh(['api', base, '-X', 'DELETE'])
 }
 

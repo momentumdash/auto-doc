@@ -10,25 +10,30 @@ function fail(message) {
 	process.exit(1)
 }
 
-const ignoreAuthors = (env.AUTO_DOC_IGNORE_AUTHORS || '').split(',').map(s => s.trim()).filter(Boolean)
+const ignored = ignoredAuthorLogins(env)
+const ignoreAuthors = [...ignored]
 
 if (which === 'integrate') {
-	const target = { repoOwner: env.REPO_OWNER || '', repoName: env.REPO_NAME || '', prNumber: env.PR_NUMBER || fail('PR_NUMBER is required') }
-	process.stdout.write(
-		integratorPrompt({
-			...target,
-			// Integration branch that doc PRs branch from and target. The
-			// closed-PR checkout sits on the merged feature branch, so this must
-			// be explicit — otherwise the doc branch inherits the feature diff.
-			// The workflow resolves the fallback chain; bail rather than guess a
-			// branch name that may not exist in the calling repo.
-			baseBranch: env.BASE_BRANCH || fail('BASE_BRANCH is required'),
-			docStyleFile: env.DOC_STYLE_FILE || 'docs/writing-docs.md',
-			// Fetched here because the agent can only run literal commands, so a
-			// fetch per rule turns into a shell loop it isn't allowed to run.
-			rules: fetchApprovedRules(target, ignoredAuthorLogins(env)),
-		})
-	)
+	const target = {
+		repoOwner: env.REPO_OWNER || fail('REPO_OWNER is required'),
+		repoName: env.REPO_NAME || fail('REPO_NAME is required'),
+		prNumber: env.PR_NUMBER || fail('PR_NUMBER is required'),
+	}
+	// Integration branch that doc PRs branch from and target. The closed-PR
+	// checkout sits on the merged feature branch, so this must be explicit —
+	// otherwise the doc branch inherits the feature diff. The workflow resolves
+	// the fallback chain; bail rather than guess a branch name that may not
+	// exist in the calling repo.
+	const baseBranch = env.BASE_BRANCH || fail('BASE_BRANCH is required')
+	// Fetched here because the agent can only run literal commands, so a fetch
+	// per rule turns into a shell loop it isn't allowed to run.
+	const rules = fetchApprovedRules(target, ignored)
+	// No prompt means nothing to integrate, and integrate.yml skips the agent.
+	if (rules.length) {
+		process.stdout.write(integratorPrompt({ ...target, baseBranch, docStyleFile: env.DOC_STYLE_FILE || 'docs/writing-docs.md', rules }))
+	} else {
+		console.error('build-prompt: no approved rules')
+	}
 } else if (which === 'respond') {
 	process.stdout.write(
 		respondPrompt({

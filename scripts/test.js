@@ -68,13 +68,14 @@ assert.strictEqual(isIgnoredAuthor(null, ignored), false)
 // A rule is approved by at least one 👍 and no 👎 from people. Bots and
 // denylisted logins count as neither approval nor veto.
 const human = (content, login = 'dace') => ({ content, user: { login, type: 'User' } })
-const comment = (id, body, isLineAnchored = true) => ({ id, body, isLineAnchored, html_url: `https://c/${id}`, user: { login: `author${id}` } })
-const marker = (id, src, isLineAnchored = true) => comment(id, buildReplyBody({ sourceCommentId: src, rule: `Rule ${id}.` }), isLineAnchored)
+const comment = (id, body, { isLineAnchored = true, type = 'User' } = {}) => ({ id, body, isLineAnchored, html_url: `https://c/${id}`, user: { login: `author${id}`, type } })
+const marker = (id, src, opts) => comment(id, buildReplyBody({ sourceCommentId: src, rule: `Rule ${id}.` }), { type: 'Bot', ...opts })
 const approve = (comments, reactions, denylist = new Set()) =>
 	approvedRules(comments, reply => reactions[reply.id] ?? [], denylist).map(r => r.reply.match(/Rule (\d+)/)[1])
-const sources = [comment(1, 'source'), comment(2, 'source'), comment(3, 'source'), comment(4, 'source', false), comment(12, 'source')]
+const issue = { isLineAnchored: false }
+const sources = [comment(1, 'source'), comment(2, 'source'), comment(3, 'source'), comment(4, 'source', issue), comment(12, 'source')]
 assert.deepStrictEqual(
-	approve([...sources, marker(10, 1), marker(11, 2), marker(13, 3), marker(14, 4, false), marker(15, 12)], {
+	approve([...sources, marker(10, 1), marker(11, 2), marker(13, 3), marker(14, 4, issue), marker(15, 12)], {
 		10: [human('+1')],
 		11: [human('+1'), human('-1', 'levi')],
 		13: [human('heart'), human('rocket')],
@@ -90,7 +91,17 @@ assert.deepStrictEqual(approve([...sources, marker(10, 1)], { 10: [human('+1'), 
 // or 123, and a review marker never resolves to an issue comment (or back).
 assert.deepStrictEqual(approve([marker(10, 1)], { 10: [human('+1')] }), [])
 assert.deepStrictEqual(approve([comment(123, 'source'), marker(10, 12)], { 10: [human('+1')] }), [])
-assert.deepStrictEqual(approve([comment(4, 'source', false), marker(10, 4)], { 10: [human('+1')] }), [])
+assert.deepStrictEqual(approve([comment(4, 'source', issue), marker(10, 4)], { 10: [human('+1')] }), [])
+// Only the bot's replies are proposals: a person can't post a marker and 👍 it,
+// and a marker anywhere but the start of the body isn't one.
+const forged = { ...marker(10, 1), user: { login: 'mallory', type: 'User' } }
+assert.deepStrictEqual(approve([...sources, forged], { 10: [human('+1')] }), [])
+assert.deepStrictEqual(approve([...sources, comment(10, `Rule 10.\n${botMarker(1)}`, { type: 'Bot' })], { 10: [human('+1')] }), [])
+// A superseding reply restarts the vote: the old reply's 👍 was for the old wording.
+assert.deepStrictEqual(approve([...sources, marker(10, 1), marker(16, 1)], { 10: [human('+1')] }), [])
+assert.deepStrictEqual(approve([...sources, marker(10, 1), marker(16, 1)], { 10: [human('-1')], 16: [human('+1')] }), ['16'])
+// The list call's 👍 total of zero skips the reactions call.
+assert.deepStrictEqual(approvedRules([...sources, { ...marker(10, 1), plusOnes: 0 }], () => assert.fail('fetched reactions'), new Set()), [])
 // What the agent gets: the source's link and author, plus the reply to parse.
 assert.deepStrictEqual(approvedRules([...sources, marker(10, 1)], () => [human('+1')], new Set()), [
 	{ sourceUrl: 'https://c/1', sourceAuthor: 'author1', reply: marker(10, 1).body },
@@ -181,7 +192,7 @@ assert.ok(allowlists >= 3, `expected the respond, cleanup, and integrate allowli
 // substitution, and shell redirects or heredocs are denied, and a denial fails
 // the run. Scan the whole rendered prompt, minus the one paragraph that names
 // these constructs to forbid them.
-const ctx = { prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main', reviewers: ['dace'], reviewId: 9, commentId: 5, supersedes: ['3', '5'], ignoreAuthors: ['flarpGPT'], rules: [{ sourceUrl: 'https://c/1', sourceAuthor: 'dace', reply: body() }] }
+const ctx = { prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main', reviewers: ['dace'], reviewId: 9, commentId: 5, supersedes: ['3', '5'], ignoreAuthors: ['flarpgpt'], rules: [{ sourceUrl: 'https://c/1', sourceAuthor: 'dace', reply: body() }] }
 const prompts = {
 	integrate: integratorPrompt(ctx),
 	cleanup: cleanupPrompt(ctx),
@@ -490,31 +501,50 @@ for (const since of ['', 'soon']) {
 }
 
 // build-prompt.js integrate against the real API projections: one list call
-// per comment stream and one reactions call per marker reply (extension#6837
-// failed when the agent made those per-reply calls itself, in a shell loop).
+// per comment stream, then one reactions call per marker reply with a 👍. The
+// agent can't loop, so these per-reply calls have to happen here.
 {
-	const raw = (id, body, login = 'dace') => ({ id, body, html_url: `https://c/${id}`, user: { login, type: 'User' } })
+	const raw = (id, body, { login = 'dace', type = 'User', plusOnes = 1 } = {}) => ({ id, body, html_url: `https://c/${id}`, user: { login, type }, reactions: { '+1': plusOnes } })
+	const bot = { login: 'auto-doc[bot]', type: 'Bot' }
+	const proposal = (id, src, rule, opts) => raw(id, buildReplyBody({ sourceCommentId: src, rule }), { ...bot, ...opts })
 	const reaction = (content, login = 'dace', type = 'User') => ({ content, user: { login, type } })
 	const fixtures = {
-		'repos/o/r/pulls/1/comments': [raw(1, 'Always use tabs.', 'levi'), raw(10, buildReplyBody({ sourceCommentId: 1, rule: 'Use tabs.' }), 'auto-doc[bot]'), raw(11, buildReplyBody({ sourceCommentId: 99, rule: 'Deleted source.' }), 'auto-doc[bot]')],
-		'repos/o/r/issues/1/comments': [raw(2, 'Prefer Record.'), raw(20, buildReplyBody({ sourceCommentId: 2, rule: 'Prefer Record.' }), 'auto-doc[bot]')],
+		'repos/o/r/pulls/1/comments': [
+			raw(1, 'Always use tabs.', { login: 'levi' }),
+			raw(3, 'Wrap lines at 100.'),
+			raw(5, 'Name files in kebab-case.'),
+			proposal(10, 1, 'Use tabs.'),
+			proposal(11, 99, 'Deleted source.'),
+			proposal(12, 3, 'Bot-approved.'),
+			proposal(13, 5, 'No thumbs.', { plusOnes: 0 }), // no reactions fixture: fetching it fails the run
+		],
+		'repos/o/r/issues/1/comments': [raw(2, 'Prefer Record.'), proposal(20, 2, 'Prefer Record.')],
 		'repos/o/r/pulls/comments/10/reactions': [reaction('+1'), reaction('+1', 'bot', 'Bot')],
 		'repos/o/r/pulls/comments/11/reactions': [reaction('+1')],
+		'repos/o/r/pulls/comments/12/reactions': [reaction('+1', 'github-actions[bot]', 'Bot')],
 		'repos/o/r/issues/comments/20/reactions': [reaction('+1'), reaction('-1', 'FlarpGPT')],
 	}
 	const env = { PR_NUMBER: '1', REPO_OWNER: 'o', REPO_NAME: 'r', BASE_BRANCH: 'main' }
 	let render = runWithStubGh(['build-prompt.js', 'integrate'], fixtures, env)
 	assert.strictEqual(render.status, 0, render.stdout)
 	assert.match(render.stdout, /"sourceUrl": "https:\/\/c\/1",\n {4}"sourceAuthor": "levi",\n {4}"reply": "[^"]*> Use tabs\./)
-	// 👎 from a person vetoes; a deleted source is skipped.
-	assert.doesNotMatch(render.stdout, /Prefer Record|Deleted source/)
+	// A person's 👎 vetoes, a bot's 👍 doesn't approve, and a deleted source is skipped.
+	assert.doesNotMatch(render.stdout, /Prefer Record|Deleted source|Bot-approved|No thumbs/)
 	// Unless the 👎 came from a denylisted login.
-	render = runWithStubGh(['build-prompt.js', 'integrate'], fixtures, { ...env, AUTO_DOC_IGNORE_AUTHORS: 'flarpgpt' })
+	render = runWithStubGh(['build-prompt.js', 'integrate'], fixtures, { ...env, AUTO_DOC_IGNORE_AUTHORS: 'FlarpGPT' })
 	assert.match(render.stdout, /> Prefer Record\./)
+	// Nothing approved: no prompt, so integrate.yml skips the agent.
+	render = runWithStubGh(['build-prompt.js', 'integrate'], { ...fixtures, 'repos/o/r/pulls/comments/10/reactions': [] }, env)
+	assert.deepStrictEqual([render.status, render.stdout], [0, ''])
 	// A failed API call fails the step rather than reporting no approved rules.
 	render = runWithStubGh(['build-prompt.js', 'integrate'], { ...fixtures, 'repos/o/r/issues/comments/20/reactions': undefined }, env)
 	assert.notStrictEqual(render.status, 0)
-	assert.match(integratorPrompt({ ...ctx, rules: [] }), /No rule was approved, so stop now/)
+	// And integrate.yml gives that step a token and runs the agent only on a prompt.
+	const integrateYml = fs.readFileSync(path.join(import.meta.dirname, '../.github/workflows/integrate.yml'), 'utf-8')
+	const buildStep = integrateYml.match(/- name: Build integrator prompt\n[^]*?\n\n/)?.[0]
+	assert.match(buildStep, /^ +GH_TOKEN: \$\{\{ steps\.app_token\.outputs\.token \|\| secrets\.GITHUB_TOKEN \}\}$/m)
+	assert.match(buildStep, /^ +AUTO_DOC_IGNORE_AUTHORS: \$\{\{ vars\.AUTO_DOC_IGNORE_AUTHORS \}\}$/m)
+	assert.match(integrateYml, /- name: Run integrator\n +id: agent\n +if: \$\{\{ steps\.build_prompt\.outputs\.prompt != '' \}\}\n/)
 }
 
 // The CLI against a throwaway repo with a local bare "origin", and a stub `gh`
