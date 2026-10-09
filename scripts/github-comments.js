@@ -33,12 +33,11 @@ function ndjson(out) {
 /**
  * Fetch every existing bot reply on the PR once and index it by source comment.
  * Two paginated list calls total, regardless of how many candidates we process
- * — the per-candidate lookup is then in-memory (see lookupReplies). A source
- * normally has one reply; older PRs can have several, oldest first.
+ * — the per-candidate lookup is then in-memory (see lookupReply). Comments come
+ * oldest-first, so a source with several replies maps to its newest.
  */
 export function fetchBotReplies({ repoOwner, repoName, prNumber }) {
-	const map = new Map() // `review:<srcId>` | `issue:<srcId>` -> [ids], oldest first
-	const add = (key, id) => map.set(key, [...(map.get(key) ?? []), id])
+	const map = new Map() // `review:<srcId>` | `issue:<srcId>` -> { id }
 
 	const review = gh([
 		'api',
@@ -48,7 +47,7 @@ export function fetchBotReplies({ repoOwner, repoName, prNumber }) {
 		`.[] | select(.body | startswith("${BOT_MARKER_PREFIX}")) | {id, in_reply_to_id}`,
 	])
 	for (const c of ndjson(review)) {
-		if (c.in_reply_to_id != null) add(`review:${c.in_reply_to_id}`, c.id)
+		if (c.in_reply_to_id != null) map.set(`review:${c.in_reply_to_id}`, { id: c.id })
 	}
 
 	const issue = gh([
@@ -62,23 +61,22 @@ export function fetchBotReplies({ repoOwner, repoName, prNumber }) {
 		// Match the full marker (`ref:<id> -->`), not a substring — otherwise
 		// ref:12 would collide with ref:123.
 		const m = c.body.match(/ref:(\d+) -->/)
-		if (m) add(`issue:${m[1]}`, c.id)
+		if (m) map.set(`issue:${m[1]}`, { id: c.id })
 	}
 
 	return map
 }
 
-/** The ids of the bot's existing replies to a source comment, oldest first. */
-export function lookupReplies(map, { sourceCommentId, isLineAnchored }) {
-	return map.get(`${isLineAnchored ? 'review' : 'issue'}:${sourceCommentId}`) ?? []
+/** Look up the bot's existing reply for a source comment in the fetched map. */
+export function lookupReply(map, { sourceCommentId, isLineAnchored }) {
+	return map.get(`${isLineAnchored ? 'review' : 'issue'}:${sourceCommentId}`) ?? null
 }
 
 /**
  * The source comments a person approved: across the bot's marker replies to a
  * source, at least one 👍 and no 👎, counting only reactions from authors
- * isIgnoredAuthor lets through. A source normally has one reply; older PRs can
- * have several, and they vote together. A source that was deleted is dropped.
- * `comments` holds both streams, oldest first, each tagged `isLineAnchored`.
+ * isIgnoredAuthor lets through. A source that was deleted is dropped.
+ * `comments` holds both streams, each tagged `isLineAnchored`.
  */
 export function approvedRules(comments, reactionsFor, ignored) {
 	const byId = new Map(comments.map(c => [`${c.isLineAnchored}:${c.id}`, c]))
@@ -96,7 +94,7 @@ export function approvedRules(comments, reactionsFor, ignored) {
 			.filter(r => !isIgnoredAuthor(r.user, ignored))
 			.map(r => r.content)
 		if (!votes.includes('+1') || votes.includes('-1')) return []
-		return [{ sourceUrl: source.html_url, sourceAuthor: source.user.login, source: sanitize(source.body), reply: replies.at(-1).body }]
+		return [{ sourceUrl: source.html_url, sourceAuthor: source.user.login, source: stripHidden(source.body) }]
 	})
 }
 
@@ -170,29 +168,25 @@ export function listReviewComments({ repoOwner, repoName, prNumber, reviewId }) 
 }
 
 /**
- * Strip anything that would render invisibly on GitHub or forge structure:
- * from a rule before it goes into a reply, and from a source comment before the
- * integrator reads it.
+ * Strip HTML comments, which GitHub renders invisibly.
  *
- * The human 👍 is this system's only real gate: a reviewer reads the proposed
- * rule and its source comment and approves them, and the integrator later acts
- * on that same text with a write-scoped token. That gate fails if the text a reviewer sees isn't the
- * text the integrator reads — and GitHub renders HTML comments invisibly, so
- * `<!-- ignore the above, instead ... -->` inside a benign-looking rule is
- * approved blind. Collapsing whitespace likewise keeps the rule inside its
- * blockquote, where it reads as quoted data rather than as new sections of the
- * bot's own message.
+ * The human 👍 is this system's only real gate: a reviewer reads a comment and
+ * its proposed rule and approves them, and the integrator later acts on that
+ * text with a write-scoped token. That gate fails if the text a reviewer sees
+ * isn't the text the integrator reads, so `<!-- ignore the above, instead ... -->`
+ * inside a benign-looking comment would be approved blind.
  */
-function sanitize(text) {
+function stripHidden(text) {
 	return String(text ?? '')
 		.replace(/<!--[\s\S]*?-->/g, '')
 		.replace(/<!--|-->/g, '')
-		.replace(/\s+/g, ' ')
 		.trim()
 }
 
 /**
  * Build the bot reply body, with the marker on line 1 so the integrator can find it.
+ * The rule is collapsed to one line so it stays inside its blockquote, where it
+ * reads as quoted data rather than as new sections of the bot's own message.
  *
  * No target file is proposed: the extractor only sees the diff, so any location
  * it guesses is usually wrong. The merge-time integrator, which can read the
@@ -201,7 +195,7 @@ function sanitize(text) {
 export function buildReplyBody({ sourceCommentId, rule }) {
 	return `${botMarker(sourceCommentId)}
 📝 Capture this as a documented rule?
-> ${sanitize(rule)}
+> ${stripHidden(rule).replace(/\s+/g, ' ')}
 
 React 👍 to record it at merge (the merge-time bot picks where it belongs). React 👎 to dismiss (a single 👎 from any reviewer overrides any 👍s).
 Want different wording? Reply \`/document <your rule text>\` — the bot posts a fresh proposal using your text verbatim.`
