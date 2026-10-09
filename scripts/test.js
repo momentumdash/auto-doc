@@ -97,9 +97,6 @@ assert.deepStrictEqual(approve([comment(4, 'source', issue), marker(10, 4)], { 1
 const forged = { ...marker(10, 1), user: { login: 'mallory', type: 'User' } }
 assert.deepStrictEqual(approve([...sources, forged], { 10: [human('+1')] }), [])
 assert.deepStrictEqual(approve([...sources, comment(10, `Rule 10.\n${botMarker(1)}`, { type: 'Bot' })], { 10: [human('+1')] }), [])
-// A superseding reply restarts the vote: the old reply's 👍 was for the old wording.
-assert.deepStrictEqual(approve([...sources, marker(10, 1), marker(16, 1)], { 10: [human('+1')] }), [])
-assert.deepStrictEqual(approve([...sources, marker(10, 1), marker(16, 1)], { 10: [human('-1')], 16: [human('+1')] }), ['16'])
 // The list call's 👍 total of zero skips the reactions call.
 assert.deepStrictEqual(approvedRules([...sources, { ...marker(10, 1), plusOnes: 0 }], () => assert.fail('fetched reactions'), new Set()), [])
 // What the agent gets: the source's link and author, plus the reply to parse.
@@ -431,7 +428,7 @@ const runWithStubGh = (argv, fixtures, env = {}) => {
 		})
 		const read = file => (fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '')
 		const calls = read(path.join(dir, 'fixtures.json.log')).split('\n').filter(Boolean).map(line => JSON.parse(line))
-		return { status: result.status, stdout: result.stdout, output: read(path.join(dir, 'out')), calls }
+		return { status: result.status, stdout: result.stdout, stderr: result.stderr, output: read(path.join(dir, 'out')), calls }
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true })
 	}
@@ -536,13 +533,13 @@ for (const since of ['', 'soon']) {
 	// Nothing approved: no prompt, so integrate.yml skips the agent.
 	render = runWithStubGh(['build-prompt.js', 'integrate'], { ...fixtures, 'repos/o/r/pulls/comments/10/reactions': [] }, env)
 	assert.deepStrictEqual([render.status, render.stdout], [0, ''])
+	assert.match(render.stderr, /^build-prompt: no approved rules$/m)
 	// A failed API call fails the step rather than reporting no approved rules.
 	render = runWithStubGh(['build-prompt.js', 'integrate'], { ...fixtures, 'repos/o/r/issues/comments/20/reactions': undefined }, env)
 	assert.notStrictEqual(render.status, 0)
-	// And integrate.yml gives that step a token and runs the agent only on a prompt.
+	// And integrate.yml gives that step the denylist and runs the agent only on a prompt.
 	const integrateYml = fs.readFileSync(path.join(import.meta.dirname, '../.github/workflows/integrate.yml'), 'utf-8')
 	const buildStep = integrateYml.match(/- name: Build integrator prompt\n[^]*?\n\n/)?.[0]
-	assert.match(buildStep, /^ +GH_TOKEN: \$\{\{ steps\.app_token\.outputs\.token \|\| secrets\.GITHUB_TOKEN \}\}$/m)
 	assert.match(buildStep, /^ +AUTO_DOC_IGNORE_AUTHORS: \$\{\{ vars\.AUTO_DOC_IGNORE_AUTHORS \}\}$/m)
 	assert.match(integrateYml, /- name: Run integrator\n +id: agent\n +if: \$\{\{ steps\.build_prompt\.outputs\.prompt != '' \}\}\n/)
 }

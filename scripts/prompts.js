@@ -90,7 +90,7 @@ export function cleanupPrompt(ctx) {
 	const reviewerStep = reviewers.length
 		? `  e. Request review from the configured reviewers: \`gh pr edit <pr-number> --add-reviewer ${reviewers.join(',')}\`. If a login can't be added (not a collaborator), note it in the PR body and continue — don't fail the run.\n`
 		: ''
-	const ignoreAuthors = ctx.ignoreAuthors || [] // lowercased by ignoredAuthorLogins
+	const ignoreAuthors = ctx.ignoreAuthors
 	const ignoreClause = ignoreAuthors.length
 		? `, and isn't one of these automation logins (case-insensitive): ${ignoreAuthors.join(', ')}`
 		: ''
@@ -181,7 +181,7 @@ This is how a human keeps, drops, or adjusts each edit. For every non-trivial hu
 }
 
 export function respondPrompt(ctx) {
-	const ignoreAuthors = ctx.ignoreAuthors || [] // lowercased by ignoredAuthorLogins
+	const ignoreAuthors = ctx.ignoreAuthors
 	const ignoreClause = ignoreAuthors.length
 		? ` Also skip comments from these automation logins (case-insensitive): ${ignoreAuthors.join(', ')}.`
 		: ''

@@ -99,21 +99,14 @@ export function validationReactionCount({ repoOwner, repoName, commentId, isLine
 /**
  * The marker replies a person approved: at least one 👍 and no 👎, counting
  * only reactions from authors isIgnoredAuthor lets through. Only the bot's own
- * replies count, and only the newest per source: a superseding reply restarts
- * the vote, since the 👍 on the old one was for the old wording. A reply whose
- * source was deleted is dropped. `comments` holds both streams, oldest first,
- * each tagged `isLineAnchored`.
+ * replies count, and a reply whose source was deleted is dropped. `comments`
+ * holds both streams, each comment tagged `isLineAnchored`.
  */
 export function approvedRules(comments, reactionsFor, ignored) {
-	const key = (isLineAnchored, id) => `${isLineAnchored}:${id}`
-	const byId = new Map(comments.map(c => [key(c.isLineAnchored, c.id), c]))
-	const newest = new Map()
-	for (const c of comments) {
-		const ref = c.user.type === 'Bot' && c.body.startsWith(BOT_MARKER_PREFIX) && c.body.match(/ref:(\d+) -->/)
-		if (ref) newest.set(key(c.isLineAnchored, ref[1]), c)
-	}
-	return [...newest].flatMap(([sourceKey, reply]) => {
-		const source = byId.get(sourceKey)
+	const byId = new Map(comments.map(c => [`${c.isLineAnchored}:${c.id}`, c]))
+	return comments.flatMap(reply => {
+		const ref = reply.user.type === 'Bot' && reply.body.startsWith(BOT_MARKER_PREFIX) && reply.body.match(/ref:(\d+) -->/)
+		const source = ref && byId.get(`${reply.isLineAnchored}:${ref[1]}`)
 		// plusOnes is the list endpoint's 👍 total; with none, there's nothing to fetch.
 		if (!source || reply.plusOnes === 0) return []
 		const votes = reactionsFor(reply)
