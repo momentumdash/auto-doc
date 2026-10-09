@@ -364,7 +364,7 @@ none of this feeds the extractor or integrator.
 | In a comment | Effect |
 | --- | --- |
 | `/document` | Force capture — treated as high-confidence even if the classifier would have passed. |
-| `/document <text>` | Capture `<text>` as the rule, bypassing the classifier's verdict. The integrator works from the comment as written. |
+| `/document <text>` | Capture `<text>` as the rule, bypassing the classifier's verdict. The integrator works from the comment as GitHub renders it. |
 | `/dontdocument` | Suppress. Deletes any existing bot reply, and never calls the model. |
 
 Editing a comment reclassifies it, and the bot edits its reply in place,
@@ -425,12 +425,11 @@ protection the code had when it lived inside a branch-protected repo.
 so no code from a PR under review is executed. The integrator does check out —
 but only after merge, so that code is already reviewed.
 
-**The human 👍 is the real gate**, and it's a gate on *rendered* text. That's
-why `buildReplyBody` strips HTML comments and collapses whitespace: GitHub
-renders `<!-- … -->` invisibly, so an unsanitized rule could show a reviewer
-something benign while the integrator reads something else. The integrator reads
-each source comment as GitHub's rendered text (`body_text`), so markup that renders
-as nothing never reaches it. `scripts/test.js` covers both.
+**The human 👍 is the real gate**, and it's a gate on *rendered* text. The
+integrator reads each source comment as GitHub's rendered text (`body_text`), so
+markup that renders as nothing, such as `<!-- … -->`, never reaches it. The bot's
+reply keeps its rule to one line with HTML comments stripped, so the rule can't
+hide or forge the bot's own instructions. `scripts/test.js` covers both.
 
 **The integrator's path allowlist is prompt-enforced, not mechanical.** It runs
 with `Bash(gh:*)`, `Bash(git:*)` and a write-scoped token, so a sufficiently
