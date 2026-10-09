@@ -80,7 +80,7 @@ export function approvedRules(comments, reactionsFor, ignored) {
 			.filter(r => !isIgnoredAuthor(r.user, ignored))
 			.map(r => r.content)
 		if (!votes.includes('+1') || votes.includes('-1')) return []
-		return [{ sourceUrl: source.html_url, sourceAuthor: source.user.login, source: stripHidden(source.body) }]
+		return [{ sourceUrl: source.html_url, sourceAuthor: source.user.login, source: source.text }]
 	})
 }
 
@@ -89,7 +89,9 @@ export function fetchApprovedRules({ repoOwner, repoName, prNumber }, ignored) {
 	const user = '{login: .user.login, type: .user.type}'
 	const list = (endpoint, isLineAnchored) =>
 		ndjson(
-			gh(['api', endpoint, '--paginate', '--jq', `.[] | {id, body, html_url, user: ${user}, votes: (.reactions["+1"] + .reactions["-1"])}`])
+			// body_text is the comment as GitHub renders it, so the integrator reads
+			// what the reviewer saw: nothing hidden in the markdown reaches it.
+			gh(['api', endpoint, '-H', 'Accept: application/vnd.github.full+json', '--paginate', '--jq', `.[] | {id, body, text: .body_text, html_url, user: ${user}, votes: (.reactions["+1"] + .reactions["-1"])}`])
 		).map(c => ({ ...c, isLineAnchored }))
 	const reactionsFor = ({ id, isLineAnchored }) =>
 		ndjson(gh(['api', `${commentPath(repoOwner, repoName, id, isLineAnchored)}/reactions`, '--paginate', '--jq', `.[] | {content, user: ${user}}`]))
@@ -154,13 +156,13 @@ export function listReviewComments({ repoOwner, repoName, prNumber, reviewId }) 
 }
 
 /**
- * Strip HTML comments and link reference definitions, which GitHub renders as nothing.
+ * Strip HTML comments and link reference definitions from a rule before it goes
+ * into a reply: GitHub renders both as nothing.
  *
- * The human 👍 is this system's only real gate: a reviewer reads a comment and
- * its proposed rule and approves them, and the integrator later acts on that
- * text with a write-scoped token. That gate fails if the text a reviewer sees
- * isn't the text the integrator reads, so `<!-- ignore the above, instead ... -->`
- * inside a benign-looking comment would be approved blind.
+ * The human 👍 is this system's only real gate: a reviewer reads a proposed rule
+ * and approves it. That gate fails if the reply hides text the reviewer can't
+ * see, so `<!-- ignore the above, instead ... -->` inside a benign-looking rule
+ * would be approved blind.
  */
 function stripHidden(text) {
 	return String(text ?? '')
@@ -185,7 +187,7 @@ export function buildReplyBody({ sourceCommentId, rule }) {
 > ${stripHidden(rule).replace(/\s+/g, ' ')}
 
 React 👍 to record it at merge (the merge-time bot picks where it belongs). React 👎 to dismiss (a single 👎 from any reviewer overrides any 👍s).
-Want different wording? Reply \`/document <your rule text>\` — the bot posts a fresh proposal using your text verbatim.`
+Want different wording? Reply \`/document <your rule text>\` — the bot posts a fresh proposal with your text.`
 }
 
 // Authors whose comments auto-doc never classifies. GitHub Apps (coderabbitai,

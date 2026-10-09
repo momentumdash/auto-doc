@@ -429,8 +429,8 @@ but only after merge, so that code is already reviewed.
 why `buildReplyBody` strips HTML comments and collapses whitespace: GitHub
 renders `<!-- … -->` invisibly, so an unsanitized rule could show a reviewer
 something benign while the integrator reads something else. The integrator reads
-the source comment with HTML comments and link reference definitions (which also
-render as nothing) stripped. `scripts/test.js` covers both.
+each source comment as GitHub's rendered text (`body_text`), so markup that renders
+as nothing never reaches it. `scripts/test.js` covers both.
 
 **The integrator's path allowlist is prompt-enforced, not mechanical.** It runs
 with `Bash(gh:*)`, `Bash(git:*)` and a write-scoped token, so a sufficiently
