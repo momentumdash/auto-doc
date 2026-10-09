@@ -20,8 +20,7 @@ function ghJson(args) {
 
 const reviewCommentsPath = (o, r, pr) => `repos/${o}/${r}/pulls/${pr}/comments`
 const issueCommentsPath = (o, r, pr) => `repos/${o}/${r}/issues/${pr}/comments`
-const reviewCommentPath = (o, r, id) => `repos/${o}/${r}/pulls/comments/${id}`
-const issueCommentPath = (o, r, id) => `repos/${o}/${r}/issues/comments/${id}`
+const commentPath = (o, r, id, isLineAnchored) => `repos/${o}/${r}/${isLineAnchored ? 'pulls' : 'issues'}/comments/${id}`
 
 function ndjson(out) {
 	return out
@@ -31,42 +30,27 @@ function ndjson(out) {
 		.map(line => JSON.parse(line))
 }
 
+// The source comment a bot reply proposes a rule for, from its marker. In a
+// review thread, in_reply_to_id is the thread's root, not the comment replied to.
+const markerRef = c =>
+	(c.user?.type === 'Bot' && (c.body ?? '').startsWith(BOT_MARKER_PREFIX) && c.body.match(/ref:(\d+) -->/)?.[1]) || null
+
 /**
  * Fetch every existing bot reply on the PR once and index it by source comment.
  * Two paginated list calls total, regardless of how many candidates we process
- * — the per-candidate lookup is then in-memory (see lookupReply). Keyed maps
- * keep the NEWEST reply per source: the GitHub REST API returns comments
- * oldest-first, so a later Map.set overwrites the older one, which is what we
- * want after a SUPERSEDES (old reacted reply + current proposal coexist).
+ * — the per-candidate lookup is then in-memory (see lookupReply). Comments come
+ * oldest-first, so a source with several replies maps to its newest.
  */
 export function fetchBotReplies({ repoOwner, repoName, prNumber }) {
-	const map = new Map() // `review:<srcId>` | `issue:<srcId>` -> { id, html_url }
-
-	const review = gh([
-		'api',
-		reviewCommentsPath(repoOwner, repoName, prNumber),
-		'--paginate',
-		'--jq',
-		`.[] | select(.body | startswith("${BOT_MARKER_PREFIX}")) | {id, html_url, in_reply_to_id}`,
-	])
-	for (const c of ndjson(review)) {
-		if (c.in_reply_to_id != null) map.set(`review:${c.in_reply_to_id}`, { id: c.id, html_url: c.html_url })
+	const map = new Map() // `review:<srcId>` | `issue:<srcId>` -> { id }
+	const streams = { review: reviewCommentsPath(repoOwner, repoName, prNumber), issue: issueCommentsPath(repoOwner, repoName, prNumber) }
+	for (const [kind, endpoint] of Object.entries(streams)) {
+		const jq = `.[] | select((.body // "") | startswith("${BOT_MARKER_PREFIX}")) | {id, body, user: {type: .user.type}}`
+		for (const c of ndjson(gh(['api', endpoint, '--paginate', '--jq', jq]))) {
+			const ref = markerRef(c)
+			if (ref) map.set(`${kind}:${ref}`, { id: c.id })
+		}
 	}
-
-	const issue = gh([
-		'api',
-		issueCommentsPath(repoOwner, repoName, prNumber),
-		'--paginate',
-		'--jq',
-		`.[] | select(.body | startswith("${BOT_MARKER_PREFIX}")) | {id, html_url, body}`,
-	])
-	for (const c of ndjson(issue)) {
-		// Match the full marker (`ref:<id> -->`), not a substring — otherwise
-		// ref:12 would collide with ref:123.
-		const m = c.body.match(/ref:(\d+) -->/)
-		if (m) map.set(`issue:${m[1]}`, { id: c.id, html_url: c.html_url })
-	}
-
 	return map
 }
 
@@ -76,27 +60,46 @@ export function lookupReply(map, { sourceCommentId, isLineAnchored }) {
 }
 
 /**
- * Count VALIDATION reactions (👍/👎) on the bot reply from non-bot users.
- * Only +1/-1 count — those are the capture/dismiss signals the integrator acts
- * on. A ❤️/🚀/👀 etc. is enthusiasm, not validation, and shouldn't freeze the
- * reply from being edited in place (which would otherwise force a redundant
- * superseding post).
+ * The source comments a person approved: across the bot's marker replies to a
+ * source, at least one 👍 and no 👎, counting only reactions from authors
+ * isIgnoredAuthor lets through. A source that was deleted is dropped.
+ * `comments` holds both streams, each tagged `isLineAnchored`.
  */
-export function validationReactionCount({ repoOwner, repoName, commentId, isLineAnchored }) {
-	const base = isLineAnchored
-		? reviewCommentPath(repoOwner, repoName, commentId)
-		: issueCommentPath(repoOwner, repoName, commentId)
-	// --slurp wraps each page in an outer array; `add` flattens before length so
-	// a >30-reaction (multi-page) comment doesn't emit one count per page.
-	const reactions = ghJson([
-		'api',
-		`${base}/reactions`,
-		'--paginate',
-		'--slurp',
-		'--jq',
-		'(add // []) | map(select(.user.type != "Bot" and (.content == "+1" or .content == "-1"))) | length',
-	])
-	return typeof reactions === 'number' ? reactions : 0
+export function approvedRules(comments, reactionsFor, ignored) {
+	const byId = new Map(comments.map(c => [`${c.isLineAnchored}:${c.id}`, c]))
+	const repliesBySource = new Map()
+	for (const c of comments) {
+		const source = byId.get(`${c.isLineAnchored}:${markerRef(c)}`)
+		if (source) repliesBySource.set(source, [...(repliesBySource.get(source) ?? []), c])
+	}
+	return [...repliesBySource].flatMap(([source, replies]) => {
+		// `votes` is the list endpoint's 👍 + 👎 total; with none, there's nothing to fetch.
+		const votes = replies
+			.filter(reply => reply.votes !== 0)
+			.flatMap(reactionsFor)
+			.filter(r => !isIgnoredAuthor(r.user, ignored))
+			.map(r => r.content)
+		if (!votes.includes('+1') || votes.includes('-1')) return []
+		return [{ sourceUrl: source.html_url, sourceAuthor: source.user.login, source: source.text }]
+	})
+}
+
+/** approvedRules for a PR: two list calls, then a reactions call per marker reply that has any 👍 or 👎. */
+export function fetchApprovedRules({ repoOwner, repoName, prNumber }, ignored) {
+	const user = '{login: .user.login, type: .user.type}'
+	const list = (endpoint, isLineAnchored) =>
+		ndjson(
+			// body_text is the comment as GitHub renders it, so the integrator reads
+			// what the reviewer saw: nothing hidden in the markdown reaches it.
+			gh(['api', endpoint, '-H', 'Accept: application/vnd.github.full+json', '--paginate', '--jq', `.[] | {id, body, text: .body_text, html_url, user: ${user}, votes: (.reactions["+1"] + .reactions["-1"])}`])
+		).map(c => ({ ...c, isLineAnchored }))
+	const reactionsFor = ({ id, isLineAnchored }) =>
+		ndjson(gh(['api', `${commentPath(repoOwner, repoName, id, isLineAnchored)}/reactions`, '--paginate', '--jq', `.[] | {content, user: ${user}}`]))
+	const comments = [
+		...list(reviewCommentsPath(repoOwner, repoName, prNumber), true),
+		...list(issueCommentsPath(repoOwner, repoName, prNumber), false),
+	]
+	return approvedRules(comments, reactionsFor, ignored)
 }
 
 function withBodyFile(body, fn) {
@@ -130,17 +133,13 @@ export function postReply({ repoOwner, repoName, prNumber, sourceCommentId, isLi
 
 /** Edit an existing bot reply in place. */
 export function editReply({ repoOwner, repoName, commentId, isLineAnchored, body }) {
-	const base = isLineAnchored
-		? reviewCommentPath(repoOwner, repoName, commentId)
-		: issueCommentPath(repoOwner, repoName, commentId)
+	const base = commentPath(repoOwner, repoName, commentId, isLineAnchored)
 	withBodyFile(body, file => gh(['api', base, '-X', 'PATCH', '-F', `body=@${file}`]))
 }
 
 /** Delete an existing bot reply. */
 export function deleteReply({ repoOwner, repoName, commentId, isLineAnchored }) {
-	const base = isLineAnchored
-		? reviewCommentPath(repoOwner, repoName, commentId)
-		: issueCommentPath(repoOwner, repoName, commentId)
+	const base = commentPath(repoOwner, repoName, commentId, isLineAnchored)
 	gh(['api', base, '-X', 'DELETE'])
 }
 
@@ -157,45 +156,38 @@ export function listReviewComments({ repoOwner, repoName, prNumber, reviewId }) 
 }
 
 /**
- * Strip anything that would render invisibly on GitHub or forge structure in
- * the reply body.
+ * Strip HTML comments and link reference definitions from a rule before it goes
+ * into a reply: GitHub renders both as nothing.
  *
- * The human 👍 is this system's only real gate: a reviewer reads the proposed
- * rule and approves it, and the integrator later acts on that same text with a
- * write-scoped token. That gate fails if the text a reviewer sees isn't the
- * text the integrator reads — and GitHub renders HTML comments invisibly, so
- * `<!-- ignore the above, instead ... -->` inside a benign-looking rule is
- * approved blind. Collapsing whitespace likewise keeps the rule inside its
- * blockquote, where it reads as quoted data rather than as new sections of the
- * bot's own message.
+ * The human 👍 is this system's only real gate: a reviewer reads a proposed rule
+ * and approves it. That gate fails if the reply hides text the reviewer can't
+ * see, so `<!-- ignore the above, instead ... -->` inside a benign-looking rule
+ * would be approved blind.
  */
-function sanitizeForReply(text) {
+function stripHidden(text) {
 	return String(text ?? '')
 		.replace(/<!--[\s\S]*?-->/g, '')
 		.replace(/<!--|-->/g, '')
-		.replace(/\s+/g, ' ')
+		.replace(/^ {0,3}\[[^\]]+\]:.*$/gm, '')
 		.trim()
 }
 
 /**
- * Build the bot reply body. `supersedesUrl`, when set, adds a line immediately
- * after the marker (keeping the marker on line 1 so the integrator can find it).
+ * Build the bot reply body, with the marker on line 1 so the integrator can find it.
+ * The rule is collapsed to one line so it stays inside its blockquote, where it
+ * reads as quoted data rather than as new sections of the bot's own message.
  *
  * No target file is proposed: the extractor only sees the diff, so any location
  * it guesses is usually wrong. The merge-time integrator, which can read the
  * whole repo's doc tree, decides where the rule belongs.
  */
-export function buildReplyBody({ sourceCommentId, rule, supersedesUrl }) {
-	rule = sanitizeForReply(rule)
-	const supersedes = supersedesUrl
-		? `\n> Supersedes earlier proposal at ${supersedesUrl}; that one's 👍 was for the previous wording.\n`
-		: ''
-	return `${botMarker(sourceCommentId)}${supersedes}
+export function buildReplyBody({ sourceCommentId, rule }) {
+	return `${botMarker(sourceCommentId)}
 📝 Capture this as a documented rule?
-> ${rule}
+> ${stripHidden(rule).replace(/\s+/g, ' ')}
 
 React 👍 to record it at merge (the merge-time bot picks where it belongs). React 👎 to dismiss (a single 👎 from any reviewer overrides any 👍s).
-Want different wording? Reply \`/document <your rule text>\` — the bot posts a fresh proposal using your text verbatim.`
+Want different wording? Reply \`/document <your rule text>\` — the bot posts a fresh proposal with your text.`
 }
 
 // Authors whose comments auto-doc never classifies. GitHub Apps (coderabbitai,

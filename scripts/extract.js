@@ -11,7 +11,6 @@ import {
 	listReviewComments,
 	lookupReply,
 	postReply,
-	validationReactionCount,
 } from './github-comments.js'
 
 const eventName = process.env.GITHUB_EVENT_NAME
@@ -79,29 +78,17 @@ async function processCandidate(cand, common, replies) {
 		return
 	}
 
-	const replyBodyFor = supersedesUrl =>
-		buildReplyBody({ sourceCommentId: cand.id, rule: result.rule, supersedesUrl })
-
+	const body = buildReplyBody({ sourceCommentId: cand.id, rule: result.rule })
 	if (!existing) {
-		const url = postReply({ ...target, prNumber: common.prNumber, sourceCommentId: cand.id, body: replyBodyFor() })
+		const url = postReply({ ...target, prNumber: common.prNumber, sourceCommentId: cand.id, body })
 		console.log(`auto-doc: posted reply for ${cand.id} -> ${url}`)
 		return
 	}
 
-	// Existing reply with reactions → leave it (its 👍 was for the old wording)
-	// and post a fresh superseding reply. Otherwise edit in place.
-	if (validationReactionCount({ ...target, commentId: existing.id }) > 0) {
-		const url = postReply({
-			...target,
-			prNumber: common.prNumber,
-			sourceCommentId: cand.id,
-			body: replyBodyFor(existing.html_url),
-		})
-		console.log(`auto-doc: superseded reply for ${cand.id} -> ${url}`)
-	} else {
-		editReply({ ...target, commentId: existing.id, body: replyBodyFor() })
-		console.log(`auto-doc: edited reply for ${cand.id}`)
-	}
+	// Edit in place, keeping the reactions: approval belongs to the source
+	// comment, which the integrator reads as it stands at merge.
+	editReply({ ...target, commentId: existing.id, body })
+	console.log(`auto-doc: edited reply for ${cand.id}`)
 }
 
 function gather() {

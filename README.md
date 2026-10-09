@@ -10,7 +10,7 @@ Four workflows:
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `extract.yml` | review submitted / comment created or edited | Classifies each comment with Haiku. Rule-worthy ones get a threaded bot reply carrying a `<!-- auto-doc-bot ref:N -->` marker. |
-| `integrate.yml` | PR merged | Collects marker replies with a 👍 and no 👎, decides covered / contradicts / missing per rule, and opens one doc PR. |
+| `integrate.yml` | PR merged | A script collects marker replies with a 👍 and no 👎. If there are any, an agent decides covered / contradicts / missing per rule and opens one doc PR. |
 | `cleanup.yml` | weekly schedule | Tidies the CLAUDE.md tree and the guides it links to (contradictions, bloat, drift), opens one doc PR, and comments inline on each change. See [Weekly cleanup](#weekly-cleanup). |
 | `respond.yml` | comment / review on an auto-doc PR | Acts on a human's feedback on a doc PR the bot opened: reverts a change, applies a requested edit, or replies. See [Responding to feedback](#responding-to-feedback). |
 
@@ -20,6 +20,9 @@ shows up red instead of quietly doing nothing.
 
 Reactions are the only validation surface — the integrator never reads comment
 text for sentiment. A single 👎 from any non-bot user overrides any number of 👍s.
+A 👍 approves the source comment, not one wording of it: the integrator reads the
+comment as it stands at merge, so a 👍 given before an edit still counts. The doc
+PR's human review is the check on what that edit changed.
 
 > [!WARNING]
 > **Private repositories only, as it stands today.** The integrator and the
@@ -361,12 +364,12 @@ none of this feeds the extractor or integrator.
 | In a comment | Effect |
 | --- | --- |
 | `/document` | Force capture — treated as high-confidence even if the classifier would have passed. |
-| `/document <text>` | Capture `<text>` verbatim as the rule, bypassing the classifier's verdict. |
+| `/document <text>` | Capture `<text>` as the rule, bypassing the classifier's verdict. The integrator works from the comment as written. |
 | `/dontdocument` | Suppress. Deletes any existing bot reply, and never calls the model. |
 
-Editing a comment reclassifies it. If the existing bot reply already has a 👍 or
-👎, it's left alone and a new superseding reply is posted — a reaction approved
-a specific wording, so it never silently transfers to different text.
+Editing a comment reclassifies it, and the bot edits its reply in place,
+keeping the reactions. If the edit means the comment is no longer a rule, the
+reply is deleted.
 
 ## What gets captured
 
@@ -425,8 +428,9 @@ but only after merge, so that code is already reviewed.
 **The human 👍 is the real gate**, and it's a gate on *rendered* text. That's
 why `buildReplyBody` strips HTML comments and collapses whitespace: GitHub
 renders `<!-- … -->` invisibly, so an unsanitized rule could show a reviewer
-something benign while the integrator reads something else. `scripts/test.js`
-covers this.
+something benign while the integrator reads something else. The integrator reads
+each source comment as GitHub's rendered text (`body_text`), so markup that renders
+as nothing never reaches it. `scripts/test.js` covers both.
 
 **The integrator's path allowlist is prompt-enforced, not mechanical.** It runs
 with `Bash(gh:*)`, `Bash(git:*)` and a write-scoped token, so a sufficiently
