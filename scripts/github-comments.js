@@ -99,6 +99,43 @@ export function validationReactionCount({ repoOwner, repoName, commentId, isLine
 	return typeof reactions === 'number' ? reactions : 0
 }
 
+/**
+ * The marker replies a person approved: at least one 👍 and no 👎, counting
+ * only reactions from authors isIgnoredAuthor lets through. Each comes with its
+ * source comment, and a reply whose source was deleted is dropped. `comments`
+ * holds both streams, each comment tagged `isLineAnchored`.
+ */
+export function approvedRules(comments, reactionsFor, ignored) {
+	const byId = new Map(comments.map(c => [`${c.isLineAnchored}:${c.id}`, c]))
+	return comments.flatMap(reply => {
+		const ref = reply.body.startsWith(BOT_MARKER_PREFIX) && reply.body.match(/ref:(\d+) -->/)
+		const source = ref && byId.get(`${reply.isLineAnchored}:${ref[1]}`)
+		if (!source) return []
+		const votes = reactionsFor(reply)
+			.filter(r => !isIgnoredAuthor(r.user, ignored))
+			.map(r => r.content)
+		if (!votes.includes('+1') || votes.includes('-1')) return []
+		return [{ sourceUrl: source.html_url, sourceAuthor: source.user.login, reply: reply.body }]
+	})
+}
+
+/** approvedRules for a PR: two list calls, then one reactions call per marker reply. */
+export function fetchApprovedRules({ repoOwner, repoName, prNumber }, ignored) {
+	const list = (endpoint, isLineAnchored) =>
+		ndjson(gh(['api', endpoint, '--paginate', '--jq', '.[] | {id, body, html_url, user: {login: .user.login}}'])).map(
+			c => ({ ...c, isLineAnchored })
+		)
+	const reactionsFor = ({ id, isLineAnchored }) => {
+		const base = isLineAnchored ? reviewCommentPath(repoOwner, repoName, id) : issueCommentPath(repoOwner, repoName, id)
+		return ndjson(gh(['api', `${base}/reactions`, '--paginate', '--jq', '.[] | {content, user: {login: .user.login, type: .user.type}}']))
+	}
+	const comments = [
+		...list(reviewCommentsPath(repoOwner, repoName, prNumber), true),
+		...list(issueCommentsPath(repoOwner, repoName, prNumber), false),
+	]
+	return approvedRules(comments, reactionsFor, ignored)
+}
+
 function withBodyFile(body, fn) {
 	const file = path.join(os.tmpdir(), `auto-doc-body-${process.pid}-${Date.now()}.md`)
 	fs.writeFileSync(file, body)

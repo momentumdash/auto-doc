@@ -84,8 +84,9 @@ jobs:
       - name: Build integrator prompt
         id: build_prompt
         env:
+          # Reads the PR's comments and reactions to find the approved rules.
+          GH_TOKEN: ${{ steps.app_token.outputs.token || secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
           # The closed-PR checkout sits on the merged feature branch, so the

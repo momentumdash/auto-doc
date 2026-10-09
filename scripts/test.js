@@ -11,7 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { LAST_REVIEWED_REF, firstChangedCommit } from './cleanup-gate.js'
 import { supersede } from './cleanup-supersede.js'
-import { BOT_MARKER_PREFIX, buildReplyBody, botMarker, ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
+import { BOT_MARKER_PREFIX, approvedRules, buildReplyBody, botMarker, ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
 import { SHELL_RULES, cleanupPrompt, integratorPrompt, respondPrompt } from './prompts.js'
 import { deniedCalls } from './agent-verdict.js'
 import { eyesTargets } from './respond-eyes.js'
@@ -64,19 +64,37 @@ assert.strictEqual(ignoredAuthorLogins({}).size, 0)
 assert.strictEqual(isIgnoredAuthor({ type: 'User', login: 'dace' }, ignoredAuthorLogins({})), false)
 assert.strictEqual(isIgnoredAuthor(null, ignored), false)
 
-// --- Integrator reaction-gate denylist -------------------------------------
-// The merge-time approval gate must exclude denylisted logins from BOTH the +1
-// and -1 checks. With a denylist, the prompt names the accounts and carries the
-// "counts as neither approval nor veto" clause.
-const gated = integratorPrompt({ prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main', ignoreAuthors: ['coderabbitai', 'flarpGPT'] })
-assert.match(gated, /login is NOT one of these automation accounts/)
-assert.match(gated, /coderabbitai, flarpgpt/) // lowercased
-assert.match(gated, /counts as neither approval nor veto/)
-// Empty denylist: no dangling clause, and the base gate still renders.
-const ungated = integratorPrompt({ prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main' })
-assert.doesNotMatch(ungated, /automation accounts/)
-assert.doesNotMatch(ungated, /automation logins named above/)
-assert.match(ungated, /at least one `\+1` reaction from a user whose `user\.type != "Bot"`, AND/)
+// --- Integrator approved rules ---------------------------------------------
+// A rule is approved by at least one 👍 and no 👎 from people. Bots and
+// denylisted logins count as neither approval nor veto.
+const human = (content, login = 'dace') => ({ content, user: { login, type: 'User' } })
+const comment = (id, body, isLineAnchored = true) => ({ id, body, isLineAnchored, html_url: `https://c/${id}`, user: { login: `author${id}` } })
+const marker = (id, src, isLineAnchored = true) => comment(id, buildReplyBody({ sourceCommentId: src, rule: `Rule ${id}.` }), isLineAnchored)
+const approve = (comments, reactions, denylist = new Set()) =>
+	approvedRules(comments, reply => reactions[reply.id] ?? [], denylist).map(r => r.reply.match(/Rule (\d+)/)[1])
+const sources = [comment(1, 'source'), comment(2, 'source'), comment(3, 'source'), comment(4, 'source', false), comment(12, 'source')]
+assert.deepStrictEqual(
+	approve([...sources, marker(10, 1), marker(11, 2), marker(13, 3), marker(14, 4, false), marker(15, 12)], {
+		10: [human('+1')],
+		11: [human('+1'), human('-1', 'levi')],
+		13: [human('heart'), human('rocket')],
+		14: [human('+1')],
+		15: [{ content: '+1', user: { login: 'github-actions[bot]', type: 'Bot' } }],
+	}),
+	['10', '14']
+)
+// A denylisted login neither approves nor vetoes.
+assert.deepStrictEqual(approve([...sources, marker(10, 1)], { 10: [human('+1', 'FlarpGPT')] }, ignored), [])
+assert.deepStrictEqual(approve([...sources, marker(10, 1)], { 10: [human('+1'), human('-1', 'flarpgpt')] }, ignored), ['10'])
+// A deleted source is skipped, not fatal. ref:12 must not resolve to source 1
+// or 123, and a review marker never resolves to an issue comment (or back).
+assert.deepStrictEqual(approve([marker(10, 1)], { 10: [human('+1')] }), [])
+assert.deepStrictEqual(approve([comment(123, 'source'), marker(10, 12)], { 10: [human('+1')] }), [])
+assert.deepStrictEqual(approve([comment(4, 'source', false), marker(10, 4)], { 10: [human('+1')] }), [])
+// What the agent gets: the source's link and author, plus the reply to parse.
+assert.deepStrictEqual(approvedRules([...sources, marker(10, 1)], () => [human('+1')], new Set()), [
+	{ sourceUrl: 'https://c/1', sourceAuthor: 'author1', reply: marker(10, 1).body },
+])
 
 // --- Responder 👀 targets --------------------------------------------------
 assert.deepStrictEqual(eyesTargets({ eventName: 'issue_comment', commentId: '5' }), [{ issueCommentId: '5' }])
@@ -163,7 +181,7 @@ assert.ok(allowlists >= 3, `expected the respond, cleanup, and integrate allowli
 // substitution, and shell redirects or heredocs are denied, and a denial fails
 // the run. Scan the whole rendered prompt, minus the one paragraph that names
 // these constructs to forbid them.
-const ctx = { prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main', reviewers: ['dace'], reviewId: 9, commentId: 5, supersedes: ['3', '5'], ignoreAuthors: ['flarpGPT'] }
+const ctx = { prNumber: 1, repoOwner: 'o', repoName: 'r', baseBranch: 'main', reviewers: ['dace'], reviewId: 9, commentId: 5, supersedes: ['3', '5'], ignoreAuthors: ['flarpGPT'], rules: [{ sourceUrl: 'https://c/1', sourceAuthor: 'dace', reply: body() }] }
 const prompts = {
 	integrate: integratorPrompt(ctx),
 	cleanup: cleanupPrompt(ctx),
@@ -215,10 +233,6 @@ const runBuild = (args, env = {}) =>
 		stdio: ['ignore', 'pipe', 'ignore'], // capture stdout; drop the child's stderr
 	})
 
-assert.match(
-	runBuild(['integrate'], { PR_NUMBER: '1', REPO_OWNER: 'o', REPO_NAME: 'r', BASE_BRANCH: 'main' }),
-	/merge-time integrator/
-)
 assert.match(
 	runBuild(['respond'], { PR_NUMBER: '1', REPO_OWNER: 'o', REPO_NAME: 'r', EVENT_NAME: 'issue_comment', COMMENT_ID: '5' }),
 	/feedback responder/
@@ -385,13 +399,14 @@ if (endpoint === 'graphql') {
 }
 process.stdout.write(execFileSync('jq', ['-r', '-c', flag('--jq')], { input: JSON.stringify(raw ?? null) }))
 `
-const runSupersedeCli = (mode, fixtures, env = {}) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-doc-supersede-'))
+const runWithStubGh = (argv, fixtures, env = {}) => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-doc-stub-gh-'))
 	try {
 		fs.writeFileSync(path.join(dir, 'gh'), STUB_GH, { mode: 0o755 })
 		fs.writeFileSync(path.join(dir, 'fixtures.json'), JSON.stringify(fixtures))
 		fs.writeFileSync(path.join(dir, 'out'), '')
-		const result = spawnSync('node', [path.join(import.meta.dirname, 'cleanup-supersede.js'), mode], {
+		const result = spawnSync('node', argv, {
+			cwd: import.meta.dirname,
 			encoding: 'utf-8',
 			env: {
 				...process.env,
@@ -410,6 +425,7 @@ const runSupersedeCli = (mode, fixtures, env = {}) => {
 		fs.rmSync(dir, { recursive: true, force: true })
 	}
 }
+const runSupersedeCli = (mode, fixtures, env = {}) => runWithStubGh(['cleanup-supersede.js', mode], fixtures, env)
 const rawPr = (number, ref, { type = 'Bot', labels = ['auto-doc'] } = {}) => ({ number, head: { ref }, user: { type }, labels: labels.map(name => ({ name })) })
 
 // `find` keeps only bot-opened, auto-doc-labeled auto-doc/cleanup-* PRs, and
@@ -471,6 +487,34 @@ for (const since of ['', 'soon']) {
 	assert.strictEqual(cli.status, 1, cli.stdout)
 	assert.match(cli.stdout, /^::error::SINCE is not a timestamp \((|soon)\), so #3 stays open\.$/m)
 	assert.deepStrictEqual(cli.calls, [])
+}
+
+// build-prompt.js integrate against the real API projections: one list call
+// per comment stream and one reactions call per marker reply (extension#6837
+// failed when the agent made those per-reply calls itself, in a shell loop).
+{
+	const raw = (id, body, login = 'dace') => ({ id, body, html_url: `https://c/${id}`, user: { login, type: 'User' } })
+	const reaction = (content, login = 'dace', type = 'User') => ({ content, user: { login, type } })
+	const fixtures = {
+		'repos/o/r/pulls/1/comments': [raw(1, 'Always use tabs.', 'levi'), raw(10, buildReplyBody({ sourceCommentId: 1, rule: 'Use tabs.' }), 'auto-doc[bot]'), raw(11, buildReplyBody({ sourceCommentId: 99, rule: 'Deleted source.' }), 'auto-doc[bot]')],
+		'repos/o/r/issues/1/comments': [raw(2, 'Prefer Record.'), raw(20, buildReplyBody({ sourceCommentId: 2, rule: 'Prefer Record.' }), 'auto-doc[bot]')],
+		'repos/o/r/pulls/comments/10/reactions': [reaction('+1'), reaction('+1', 'bot', 'Bot')],
+		'repos/o/r/pulls/comments/11/reactions': [reaction('+1')],
+		'repos/o/r/issues/comments/20/reactions': [reaction('+1'), reaction('-1', 'FlarpGPT')],
+	}
+	const env = { PR_NUMBER: '1', REPO_OWNER: 'o', REPO_NAME: 'r', BASE_BRANCH: 'main' }
+	let render = runWithStubGh(['build-prompt.js', 'integrate'], fixtures, env)
+	assert.strictEqual(render.status, 0, render.stdout)
+	assert.match(render.stdout, /"sourceUrl": "https:\/\/c\/1",\n {4}"sourceAuthor": "levi",\n {4}"reply": "[^"]*> Use tabs\./)
+	// 👎 from a person vetoes; a deleted source is skipped.
+	assert.doesNotMatch(render.stdout, /Prefer Record|Deleted source/)
+	// Unless the 👎 came from a denylisted login.
+	render = runWithStubGh(['build-prompt.js', 'integrate'], fixtures, { ...env, AUTO_DOC_IGNORE_AUTHORS: 'flarpgpt' })
+	assert.match(render.stdout, /> Prefer Record\./)
+	// A failed API call fails the step rather than reporting no approved rules.
+	render = runWithStubGh(['build-prompt.js', 'integrate'], { ...fixtures, 'repos/o/r/issues/comments/20/reactions': undefined }, env)
+	assert.notStrictEqual(render.status, 0)
+	assert.match(integratorPrompt({ ...ctx, rules: [] }), /No rule was approved, so stop now/)
 }
 
 // The CLI against a throwaway repo with a local bare "origin", and a stub `gh`

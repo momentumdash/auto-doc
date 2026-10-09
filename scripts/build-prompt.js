@@ -1,4 +1,5 @@
 /* global process */
+import { fetchApprovedRules, ignoredAuthorLogins } from './github-comments.js'
 import { cleanupPrompt, integratorPrompt, respondPrompt } from './prompts.js'
 
 const which = process.argv[2]
@@ -12,12 +13,10 @@ function fail(message) {
 const ignoreAuthors = (env.AUTO_DOC_IGNORE_AUTHORS || '').split(',').map(s => s.trim()).filter(Boolean)
 
 if (which === 'integrate') {
+	const target = { repoOwner: env.REPO_OWNER || '', repoName: env.REPO_NAME || '', prNumber: env.PR_NUMBER || fail('PR_NUMBER is required') }
 	process.stdout.write(
 		integratorPrompt({
-			prNumber: env.PR_NUMBER || '',
-			prTitle: env.PR_TITLE || '',
-			repoOwner: env.REPO_OWNER || '',
-			repoName: env.REPO_NAME || '',
+			...target,
 			// Integration branch that doc PRs branch from and target. The
 			// closed-PR checkout sits on the merged feature branch, so this must
 			// be explicit — otherwise the doc branch inherits the feature diff.
@@ -25,9 +24,9 @@ if (which === 'integrate') {
 			// branch name that may not exist in the calling repo.
 			baseBranch: env.BASE_BRANCH || fail('BASE_BRANCH is required'),
 			docStyleFile: env.DOC_STYLE_FILE || 'docs/writing-docs.md',
-			// Automation logins whose 👍/👎 must not count as human validation —
-			// same denylist the extractor applies to comments (see extract.yml).
-			ignoreAuthors,
+			// Fetched here because the agent can only run literal commands, so a
+			// fetch per rule turns into a shell loop it isn't allowed to run.
+			rules: fetchApprovedRules(target, ignoredAuthorLogins(env)),
 		})
 	)
 } else if (which === 'respond') {
