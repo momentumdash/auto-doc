@@ -546,8 +546,10 @@ for (const since of ['', 'soon']) {
 }
 
 // extract.js on an edited comment that already has a reply: it edits the reply
-// in place, keeping its reactions, and posts nothing new. Runs from a copy with
-// a stand-in SDK, which CI doesn't install; `/document <text>` never calls the model.
+// in place, keeping its reactions, and posts nothing new. The source is a reply
+// inside a review thread, so the bot reply's in_reply_to_id is the thread root
+// (500), not the source (501). Runs from a copy with a stand-in SDK, which CI
+// doesn't install; `/document <text>` never calls the model.
 {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-doc-extract-'))
 	try {
@@ -558,21 +560,21 @@ for (const since of ['', 'soon']) {
 		fs.writeFileSync(path.join(dir, 'scripts/package.json'), '{"type":"module"}')
 		fs.writeFileSync(path.join(sdk, 'package.json'), '{"type":"module","main":"index.js"}')
 		fs.writeFileSync(path.join(sdk, 'index.js'), 'export default class {}')
-		const reply = JSON.stringify({ id: 100, body: `${botMarker(5)}\nOld rule.` })
+		const reply = JSON.stringify({ id: 100, body: `${botMarker(501)}\nOld rule.`, in_reply_to_id: 500, user: { type: 'Bot' } })
 		fs.writeFileSync(
 			path.join(dir, 'bin/gh'),
-			`#!/bin/sh\necho "$*" >> "${dir}/calls"\ncase "$*" in *"issues/1/comments --paginate"*) printf '%s\\n' '${reply}' ;; *"pulls/1/comments --paginate"*) ;; *) echo '{}' ;; esac\n`,
+			`#!/bin/sh\necho "$*" >> "${dir}/calls"\ncase "$*" in *"pulls/1/comments --paginate"*) printf '%s\\n' '${reply}' ;; *"issues/1/comments --paginate"*) ;; *) echo '{}' ;; esac\n`,
 			{ mode: 0o755 }
 		)
-		fs.writeFileSync(path.join(dir, 'event.json'), JSON.stringify({ repository: { owner: { login: 'o' }, name: 'r' }, issue: { number: 1, pull_request: {}, labels: [] }, comment: { id: 5, body: '/document Use tabs everywhere.', user: { login: 'dace', type: 'User' } } }))
+		fs.writeFileSync(path.join(dir, 'event.json'), JSON.stringify({ repository: { owner: { login: 'o' }, name: 'r' }, pull_request: { number: 1, labels: [] }, comment: { id: 501, body: '/document Use tabs everywhere.', path: 'a.js', line: 1, user: { login: 'dace', type: 'User' } } }))
 		const result = spawnSync('node', [path.join(dir, 'scripts/extract.js')], {
 			encoding: 'utf-8',
-			env: { ...process.env, PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}`, GITHUB_EVENT_NAME: 'issue_comment', GITHUB_EVENT_PATH: path.join(dir, 'event.json') },
+			env: { ...process.env, PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}`, GITHUB_EVENT_NAME: 'pull_request_review_comment', GITHUB_EVENT_PATH: path.join(dir, 'event.json') },
 		})
 		assert.strictEqual(result.status, 0, result.stderr)
 		const writes = fs.readFileSync(path.join(dir, 'calls'), 'utf-8').split('\n').filter(line => line && !line.includes('--paginate'))
 		assert.strictEqual(writes.length, 1, writes.join('\n'))
-		assert.match(writes[0], /^api repos\/o\/r\/issues\/comments\/100 -X PATCH -F body=@/)
+		assert.match(writes[0], /^api repos\/o\/r\/pulls\/comments\/100 -X PATCH -F body=@/)
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true })
 	}

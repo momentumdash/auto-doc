@@ -30,6 +30,11 @@ function ndjson(out) {
 		.map(line => JSON.parse(line))
 }
 
+// The source comment a bot reply proposes a rule for, from its marker. In a
+// review thread, in_reply_to_id is the thread's root, not the comment replied to.
+const markerRef = c =>
+	(c.user?.type === 'Bot' && (c.body ?? '').startsWith(BOT_MARKER_PREFIX) && c.body.match(/ref:(\d+) -->/)?.[1]) || null
+
 /**
  * Fetch every existing bot reply on the PR once and index it by source comment.
  * Two paginated list calls total, regardless of how many candidates we process
@@ -38,32 +43,14 @@ function ndjson(out) {
  */
 export function fetchBotReplies({ repoOwner, repoName, prNumber }) {
 	const map = new Map() // `review:<srcId>` | `issue:<srcId>` -> { id }
-
-	const review = gh([
-		'api',
-		reviewCommentsPath(repoOwner, repoName, prNumber),
-		'--paginate',
-		'--jq',
-		`.[] | select(.body | startswith("${BOT_MARKER_PREFIX}")) | {id, in_reply_to_id}`,
-	])
-	for (const c of ndjson(review)) {
-		if (c.in_reply_to_id != null) map.set(`review:${c.in_reply_to_id}`, { id: c.id })
+	const streams = { review: reviewCommentsPath(repoOwner, repoName, prNumber), issue: issueCommentsPath(repoOwner, repoName, prNumber) }
+	for (const [kind, endpoint] of Object.entries(streams)) {
+		const jq = `.[] | select((.body // "") | startswith("${BOT_MARKER_PREFIX}")) | {id, body, user: {type: .user.type}}`
+		for (const c of ndjson(gh(['api', endpoint, '--paginate', '--jq', jq]))) {
+			const ref = markerRef(c)
+			if (ref) map.set(`${kind}:${ref}`, { id: c.id })
+		}
 	}
-
-	const issue = gh([
-		'api',
-		issueCommentsPath(repoOwner, repoName, prNumber),
-		'--paginate',
-		'--jq',
-		`.[] | select(.body | startswith("${BOT_MARKER_PREFIX}")) | {id, body}`,
-	])
-	for (const c of ndjson(issue)) {
-		// Match the full marker (`ref:<id> -->`), not a substring — otherwise
-		// ref:12 would collide with ref:123.
-		const m = c.body.match(/ref:(\d+) -->/)
-		if (m) map.set(`issue:${m[1]}`, { id: c.id })
-	}
-
 	return map
 }
 
@@ -82,8 +69,7 @@ export function approvedRules(comments, reactionsFor, ignored) {
 	const byId = new Map(comments.map(c => [`${c.isLineAnchored}:${c.id}`, c]))
 	const repliesBySource = new Map()
 	for (const c of comments) {
-		const ref = c.user.type === 'Bot' && c.body.startsWith(BOT_MARKER_PREFIX) && c.body.match(/ref:(\d+) -->/)
-		const source = ref && byId.get(`${c.isLineAnchored}:${ref[1]}`)
+		const source = byId.get(`${c.isLineAnchored}:${markerRef(c)}`)
 		if (source) repliesBySource.set(source, [...(repliesBySource.get(source) ?? []), c])
 	}
 	return [...repliesBySource].flatMap(([source, replies]) => {
