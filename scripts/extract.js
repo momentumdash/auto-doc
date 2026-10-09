@@ -9,9 +9,8 @@ import {
 	ignoredAuthorLogins,
 	isIgnoredAuthor,
 	listReviewComments,
-	lookupReply,
+	lookupReplies,
 	postReply,
-	validationReactionCount,
 } from './github-comments.js'
 
 const eventName = process.env.GITHUB_EVENT_NAME
@@ -32,16 +31,14 @@ function parseMarkers(body) {
 async function processCandidate(cand, common, replies) {
 	const markers = parseMarkers(cand.body)
 	const target = { repoOwner, repoName, isLineAnchored: cand.isLineAnchored }
-	const existing = lookupReply(replies, { sourceCommentId: cand.id, isLineAnchored: cand.isLineAnchored })
-
-	// /dontdocument: delete a prior reply if present, never call the LLM.
-	if (markers.suppress) {
-		if (existing) {
-			deleteReply({ ...target, commentId: existing.id })
-			console.log(`auto-doc: deleted reply for ${cand.id} (/dontdocument)`)
-		}
-		return
+	const existing = lookupReplies(replies, { sourceCommentId: cand.id, isLineAnchored: cand.isLineAnchored })
+	const deleteExisting = why => {
+		for (const commentId of existing) deleteReply({ ...target, commentId })
+		if (existing.length) console.log(`auto-doc: deleted reply for ${cand.id} (${why})`)
 	}
+
+	// /dontdocument: delete any prior reply, never call the LLM.
+	if (markers.suppress) return deleteExisting('/dontdocument')
 
 	// Explicit /document <text>: the rule text is supplied, so honor it verbatim
 	// and skip the classifier entirely — a call here would be discarded in full.
@@ -71,37 +68,19 @@ async function processCandidate(cand, common, replies) {
 		return 'unavailable'
 	}
 
-	if (!result.isRule) {
-		if (existing) {
-			deleteReply({ ...target, commentId: existing.id })
-			console.log(`auto-doc: deleted stale reply for ${cand.id} (no longer a rule)`)
-		}
-		return
-	}
+	if (!result.isRule) return deleteExisting('no longer a rule')
 
-	const replyBodyFor = supersedesUrl =>
-		buildReplyBody({ sourceCommentId: cand.id, rule: result.rule, supersedesUrl })
-
-	if (!existing) {
-		const url = postReply({ ...target, prNumber: common.prNumber, sourceCommentId: cand.id, body: replyBodyFor() })
+	const body = buildReplyBody({ sourceCommentId: cand.id, rule: result.rule })
+	if (!existing.length) {
+		const url = postReply({ ...target, prNumber: common.prNumber, sourceCommentId: cand.id, body })
 		console.log(`auto-doc: posted reply for ${cand.id} -> ${url}`)
 		return
 	}
 
-	// Existing reply with reactions → leave it (its 👍 was for the old wording)
-	// and post a fresh superseding reply. Otherwise edit in place.
-	if (validationReactionCount({ ...target, commentId: existing.id }) > 0) {
-		const url = postReply({
-			...target,
-			prNumber: common.prNumber,
-			sourceCommentId: cand.id,
-			body: replyBodyFor(existing.html_url),
-		})
-		console.log(`auto-doc: superseded reply for ${cand.id} -> ${url}`)
-	} else {
-		editReply({ ...target, commentId: existing.id, body: replyBodyFor() })
-		console.log(`auto-doc: edited reply for ${cand.id}`)
-	}
+	// Edit in place, keeping its reactions: approval belongs to the source
+	// comment, and the integrator reads the source as it stands at merge.
+	editReply({ ...target, commentId: existing.at(-1), body })
+	console.log(`auto-doc: edited reply for ${cand.id}`)
 }
 
 function gather() {

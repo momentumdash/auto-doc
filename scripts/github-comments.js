@@ -33,23 +33,22 @@ function ndjson(out) {
 /**
  * Fetch every existing bot reply on the PR once and index it by source comment.
  * Two paginated list calls total, regardless of how many candidates we process
- * — the per-candidate lookup is then in-memory (see lookupReply). Keyed maps
- * keep the NEWEST reply per source: the GitHub REST API returns comments
- * oldest-first, so a later Map.set overwrites the older one, which is what we
- * want after a SUPERSEDES (old reacted reply + current proposal coexist).
+ * — the per-candidate lookup is then in-memory (see lookupReplies). A source
+ * normally has one reply; older PRs can have several, oldest first.
  */
 export function fetchBotReplies({ repoOwner, repoName, prNumber }) {
-	const map = new Map() // `review:<srcId>` | `issue:<srcId>` -> { id, html_url }
+	const map = new Map() // `review:<srcId>` | `issue:<srcId>` -> [ids], oldest first
+	const add = (key, id) => map.set(key, [...(map.get(key) ?? []), id])
 
 	const review = gh([
 		'api',
 		reviewCommentsPath(repoOwner, repoName, prNumber),
 		'--paginate',
 		'--jq',
-		`.[] | select(.body | startswith("${BOT_MARKER_PREFIX}")) | {id, html_url, in_reply_to_id}`,
+		`.[] | select(.body | startswith("${BOT_MARKER_PREFIX}")) | {id, in_reply_to_id}`,
 	])
 	for (const c of ndjson(review)) {
-		if (c.in_reply_to_id != null) map.set(`review:${c.in_reply_to_id}`, { id: c.id, html_url: c.html_url })
+		if (c.in_reply_to_id != null) add(`review:${c.in_reply_to_id}`, c.id)
 	}
 
 	const issue = gh([
@@ -57,73 +56,57 @@ export function fetchBotReplies({ repoOwner, repoName, prNumber }) {
 		issueCommentsPath(repoOwner, repoName, prNumber),
 		'--paginate',
 		'--jq',
-		`.[] | select(.body | startswith("${BOT_MARKER_PREFIX}")) | {id, html_url, body}`,
+		`.[] | select(.body | startswith("${BOT_MARKER_PREFIX}")) | {id, body}`,
 	])
 	for (const c of ndjson(issue)) {
 		// Match the full marker (`ref:<id> -->`), not a substring — otherwise
 		// ref:12 would collide with ref:123.
 		const m = c.body.match(/ref:(\d+) -->/)
-		if (m) map.set(`issue:${m[1]}`, { id: c.id, html_url: c.html_url })
+		if (m) add(`issue:${m[1]}`, c.id)
 	}
 
 	return map
 }
 
-/** Look up the bot's existing reply for a source comment in the fetched map. */
-export function lookupReply(map, { sourceCommentId, isLineAnchored }) {
-	return map.get(`${isLineAnchored ? 'review' : 'issue'}:${sourceCommentId}`) ?? null
+/** The ids of the bot's existing replies to a source comment, oldest first. */
+export function lookupReplies(map, { sourceCommentId, isLineAnchored }) {
+	return map.get(`${isLineAnchored ? 'review' : 'issue'}:${sourceCommentId}`) ?? []
 }
 
 /**
- * Count VALIDATION reactions (👍/👎) on the bot reply from non-bot users.
- * Only +1/-1 count — those are the capture/dismiss signals the integrator acts
- * on. A ❤️/🚀/👀 etc. is enthusiasm, not validation, and shouldn't freeze the
- * reply from being edited in place (which would otherwise force a redundant
- * superseding post).
- */
-export function validationReactionCount({ repoOwner, repoName, commentId, isLineAnchored }) {
-	const base = commentPath(repoOwner, repoName, commentId, isLineAnchored)
-	// --slurp wraps each page in an outer array; `add` flattens before length so
-	// a >30-reaction (multi-page) comment doesn't emit one count per page.
-	const reactions = ghJson([
-		'api',
-		`${base}/reactions`,
-		'--paginate',
-		'--slurp',
-		'--jq',
-		'(add // []) | map(select(.user.type != "Bot" and (.content == "+1" or .content == "-1"))) | length',
-	])
-	return typeof reactions === 'number' ? reactions : 0
-}
-
-/**
- * The marker replies a person approved: at least one 👍 and no 👎, counting
- * only reactions from authors isIgnoredAuthor lets through. Only the bot's own
- * replies count, and a reply whose source was deleted is dropped. `comments`
- * holds both streams, each comment tagged `isLineAnchored`.
+ * The source comments a person approved: across the bot's marker replies to a
+ * source, at least one 👍 and no 👎, counting only reactions from authors
+ * isIgnoredAuthor lets through. A source normally has one reply; older PRs can
+ * have several, and they vote together. A source that was deleted is dropped.
+ * `comments` holds both streams, oldest first, each tagged `isLineAnchored`.
  */
 export function approvedRules(comments, reactionsFor, ignored) {
 	const byId = new Map(comments.map(c => [`${c.isLineAnchored}:${c.id}`, c]))
-	return comments.flatMap(reply => {
-		const ref = reply.user.type === 'Bot' && reply.body.startsWith(BOT_MARKER_PREFIX) && reply.body.match(/ref:(\d+) -->/)
-		const source = ref && byId.get(`${reply.isLineAnchored}:${ref[1]}`)
-		// plusOnes is the list endpoint's 👍 total; with none, there's nothing to fetch.
-		if (!source || reply.plusOnes === 0) return []
-		const votes = reactionsFor(reply)
+	const repliesBySource = new Map()
+	for (const c of comments) {
+		const ref = c.user.type === 'Bot' && c.body.startsWith(BOT_MARKER_PREFIX) && c.body.match(/ref:(\d+) -->/)
+		const source = ref && byId.get(`${c.isLineAnchored}:${ref[1]}`)
+		if (source) repliesBySource.set(source, [...(repliesBySource.get(source) ?? []), c])
+	}
+	return [...repliesBySource].flatMap(([source, replies]) => {
+		// `votes` is the list endpoint's 👍 + 👎 total; with none, there's nothing to fetch.
+		const votes = replies
+			.filter(reply => reply.votes !== 0)
+			.flatMap(reactionsFor)
 			.filter(r => !isIgnoredAuthor(r.user, ignored))
 			.map(r => r.content)
 		if (!votes.includes('+1') || votes.includes('-1')) return []
-		return [{ sourceUrl: source.html_url, sourceAuthor: source.user.login, reply: reply.body }]
+		return [{ sourceUrl: source.html_url, sourceAuthor: source.user.login, source: sanitize(source.body), reply: replies.at(-1).body }]
 	})
 }
 
-/** approvedRules for a PR: two list calls, then a reactions call per marker reply that has a 👍. */
+/** approvedRules for a PR: two list calls, then a reactions call per marker reply that has any 👍 or 👎. */
 export function fetchApprovedRules({ repoOwner, repoName, prNumber }, ignored) {
 	const user = '{login: .user.login, type: .user.type}'
 	const list = (endpoint, isLineAnchored) =>
-		ndjson(gh(['api', endpoint, '--paginate', '--jq', `.[] | {id, body, html_url, user: ${user}, plusOnes: .reactions["+1"]}`])).map(
-			c => ({ ...c, isLineAnchored })
-		)
+		ndjson(
+			gh(['api', endpoint, '--paginate', '--jq', `.[] | {id, body, html_url, user: ${user}, votes: (.reactions["+1"] + .reactions["-1"])}`])
+		).map(c => ({ ...c, isLineAnchored }))
 	const reactionsFor = ({ id, isLineAnchored }) =>
 		ndjson(gh(['api', `${commentPath(repoOwner, repoName, id, isLineAnchored)}/reactions`, '--paginate', '--jq', `.[] | {content, user: ${user}}`]))
 	const comments = [
@@ -187,19 +170,20 @@ export function listReviewComments({ repoOwner, repoName, prNumber, reviewId }) 
 }
 
 /**
- * Strip anything that would render invisibly on GitHub or forge structure in
- * the reply body.
+ * Strip anything that would render invisibly on GitHub or forge structure:
+ * from a rule before it goes into a reply, and from a source comment before the
+ * integrator reads it.
  *
  * The human 👍 is this system's only real gate: a reviewer reads the proposed
- * rule and approves it, and the integrator later acts on that same text with a
- * write-scoped token. That gate fails if the text a reviewer sees isn't the
+ * rule and its source comment and approves them, and the integrator later acts
+ * on that same text with a write-scoped token. That gate fails if the text a reviewer sees isn't the
  * text the integrator reads — and GitHub renders HTML comments invisibly, so
  * `<!-- ignore the above, instead ... -->` inside a benign-looking rule is
  * approved blind. Collapsing whitespace likewise keeps the rule inside its
  * blockquote, where it reads as quoted data rather than as new sections of the
  * bot's own message.
  */
-function sanitizeForReply(text) {
+function sanitize(text) {
 	return String(text ?? '')
 		.replace(/<!--[\s\S]*?-->/g, '')
 		.replace(/<!--|-->/g, '')
@@ -208,21 +192,16 @@ function sanitizeForReply(text) {
 }
 
 /**
- * Build the bot reply body. `supersedesUrl`, when set, adds a line immediately
- * after the marker (keeping the marker on line 1 so the integrator can find it).
+ * Build the bot reply body, with the marker on line 1 so the integrator can find it.
  *
  * No target file is proposed: the extractor only sees the diff, so any location
  * it guesses is usually wrong. The merge-time integrator, which can read the
  * whole repo's doc tree, decides where the rule belongs.
  */
-export function buildReplyBody({ sourceCommentId, rule, supersedesUrl }) {
-	rule = sanitizeForReply(rule)
-	const supersedes = supersedesUrl
-		? `\n> Supersedes earlier proposal at ${supersedesUrl}; that one's 👍 was for the previous wording.\n`
-		: ''
-	return `${botMarker(sourceCommentId)}${supersedes}
+export function buildReplyBody({ sourceCommentId, rule }) {
+	return `${botMarker(sourceCommentId)}
 📝 Capture this as a documented rule?
-> ${rule}
+> ${sanitize(rule)}
 
 React 👍 to record it at merge (the merge-time bot picks where it belongs). React 👎 to dismiss (a single 👎 from any reviewer overrides any 👍s).
 Want different wording? Reply \`/document <your rule text>\` — the bot posts a fresh proposal using your text verbatim.`
