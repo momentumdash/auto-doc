@@ -159,16 +159,21 @@ export function listReviewComments({ repoOwner, repoName, prNumber, reviewId }) 
  * Keep a rule to one visible line inside the reply's blockquote. An HTML comment
  * renders invisibly and could hide the bot's own instructions, and a line break
  * would let the rule escape the blockquote and read as part of the bot's message.
- * A leading `[` is escaped so a rule like `[Links]: prefix` renders as text.
+ * The first character is escaped when it would start a Markdown block (a list or
+ * quote marker, a heading, a `[label]: dest` link definition), which GitHub can
+ * render as nothing.
  */
 function sanitizeRule(text) {
-	return String(text ?? '')
-		.replace(/<!--[\s\S]*?-->/g, '')
-		.replace(/<!--|-->/g, '')
+	let rule = String(text ?? '')
+	// Removing a comment can join the text around it into a new one (`<<!--!--`), so strip until stable.
+	for (let prev; prev !== rule; ) {
+		prev = rule
+		rule = rule.replace(/<!--[\s\S]*?-->/g, '').replace(/<!--|-->/g, '')
+	}
+	return rule
 		.replace(/\s+/g, ' ')
 		.trim()
-		// A leading `[label]: dest` is a link-reference definition, which GitHub hides.
-		.replace(/^\[/, '\\[')
+		.replace(/^(\d*)([>[<#*+.)-])/, '$1\\$2')
 }
 
 /**

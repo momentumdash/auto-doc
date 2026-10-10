@@ -428,8 +428,9 @@ but only after merge, so that code is already reviewed.
 **The human 👍 is the real gate**, and it's a gate on *rendered* text. The
 integrator reads each source comment as GitHub's rendered text (`body_text`), so
 markup that renders as nothing, such as `<!-- … -->`, never reaches it. The bot's
-reply keeps its rule to one line with HTML comments stripped, so the rule can't
-hide or forge the bot's own instructions. `scripts/test.js` covers both.
+reply keeps its rule to one line with HTML comments stripped, and escapes a
+leading character that would open a Markdown block, so the rule can't hide or
+forge the bot's own instructions. `scripts/test.js` covers both.
 
 **The integrator's path allowlist is prompt-enforced, not mechanical.** It runs
 with `Bash(gh:*)`, `Bash(git:*)` and a write-scoped token, so a sufficiently

@@ -32,6 +32,14 @@ assert.doesNotMatch(ruleLine({ rule: 'Use tabs. --> trailing' }), /-->/)
 // GitHub renders as nothing (verified with the markdown API), so the reviewer
 // would see an empty proposal. The escaped `\[` renders as literal text.
 assert.equal(ruleLine({ rule: '[Links]: prefix' }), '> \\[Links]: prefix')
+// Same for a definition nested one block down, and a leading marker that would open a list.
+assert.equal(ruleLine({ rule: '> [x]: /u' }), '> \\> [x]: /u')
+assert.equal(ruleLine({ rule: '1. [x]: /u' }), '> 1\\. [x]: /u')
+
+// Deleting a comment must not splice the text around it into a new comment opener,
+// which would hide the rest of the reply.
+assert.doesNotMatch(body({ rule: '<-->!-- x' }), /<!--\s*x/)
+assert.doesNotMatch(ruleLine({ rule: '<<!--!-- x' }), /<!--/)
 
 // Multi-line rules would escape the blockquote and read as new sections of the
 // bot's own message rather than as quoted, attacker-supplied data.
