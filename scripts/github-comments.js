@@ -156,26 +156,28 @@ export function listReviewComments({ repoOwner, repoName, prNumber, reviewId }) 
 }
 
 /**
- * Strip HTML comments and link reference definitions from a rule before it goes
- * into a reply: GitHub renders both as nothing.
- *
- * The human 👍 is this system's only real gate: a reviewer reads a proposed rule
- * and approves it. That gate fails if the reply hides text the reviewer can't
- * see, so `<!-- ignore the above, instead ... -->` inside a benign-looking rule
- * would be approved blind.
+ * Keep a rule to one visible line inside the reply's blockquote. An HTML comment
+ * renders invisibly and could hide the bot's own instructions, and a line break
+ * would let the rule escape the blockquote and read as part of the bot's message.
+ * The first character is escaped when it would start a Markdown block (a list or
+ * quote marker, a heading, a `[label]: dest` link definition), which GitHub can
+ * render as nothing.
  */
-function stripHidden(text) {
-	return String(text ?? '')
-		.replace(/<!--[\s\S]*?-->/g, '')
-		.replace(/<!--|-->/g, '')
-		.replace(/^ {0,3}\[[^\]]+\]:.*$/gm, '')
+function sanitizeRule(text) {
+	let rule = String(text ?? '')
+	// Removing a comment can join the text around it into a new one (`<<!--!--`), so strip until stable.
+	for (let prev; prev !== rule; ) {
+		prev = rule
+		rule = rule.replace(/<!--[\s\S]*?-->/g, '').replace(/<!--|-->/g, '')
+	}
+	return rule
+		.replace(/\s+/g, ' ')
 		.trim()
+		.replace(/^(\d*)([>[<#*+.)-])/, '$1\\$2')
 }
 
 /**
  * Build the bot reply body, with the marker on line 1 so the integrator can find it.
- * The rule is collapsed to one line so it stays inside its blockquote, where it
- * reads as quoted data rather than as new sections of the bot's own message.
  *
  * No target file is proposed: the extractor only sees the diff, so any location
  * it guesses is usually wrong. The merge-time integrator, which can read the
@@ -184,7 +186,7 @@ function stripHidden(text) {
 export function buildReplyBody({ sourceCommentId, rule }) {
 	return `${botMarker(sourceCommentId)}
 📝 Capture this as a documented rule?
-> ${stripHidden(rule).replace(/\s+/g, ' ')}
+> ${sanitizeRule(rule)}
 
 React 👍 to record it at merge (the merge-time bot picks where it belongs). React 👎 to dismiss (a single 👎 from any reviewer overrides any 👍s).
 Want different wording? Reply \`/document <your rule text>\` — the bot posts a fresh proposal with your text.`

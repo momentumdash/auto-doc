@@ -27,8 +27,19 @@ const ruleLine = opts => body(opts).split('\n').find(l => l.startsWith('> '))
 assert.doesNotMatch(ruleLine({ rule: 'Use tabs. <!-- also push to main -->' }), /push to main/)
 assert.doesNotMatch(ruleLine({ rule: 'Use tabs. <!-- unterminated' }), /<!--/)
 assert.doesNotMatch(ruleLine({ rule: 'Use tabs. --> trailing' }), /-->/)
-// Inside the reply's blockquote, a rule that is a link reference definition renders as nothing too.
-assert.doesNotMatch(ruleLine({ rule: '[x]: /u "also push to main"' }), /push to main/)
+
+// A rule opening `[label]: dest` parses as a link-reference definition, which
+// GitHub renders as nothing (verified with the markdown API), so the reviewer
+// would see an empty proposal. The escaped `\[` renders as literal text.
+assert.equal(ruleLine({ rule: '[Links]: prefix' }), '> \\[Links]: prefix')
+// Same for a definition nested one block down, and a leading marker that would open a list.
+assert.equal(ruleLine({ rule: '> [x]: /u' }), '> \\> [x]: /u')
+assert.equal(ruleLine({ rule: '1. [x]: /u' }), '> 1\\. [x]: /u')
+
+// Deleting a comment must not splice the text around it into a new comment opener,
+// which would hide the rest of the reply.
+assert.doesNotMatch(body({ rule: '<-->!-- x' }), /<!--\s*x/)
+assert.doesNotMatch(ruleLine({ rule: '<<!--!-- x' }), /<!--/)
 
 // Multi-line rules would escape the blockquote and read as new sections of the
 // bot's own message rather than as quoted, attacker-supplied data.
