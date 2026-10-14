@@ -73,8 +73,8 @@ on:
   issue_comment: { types: [created, edited] }
 jobs:
   extract:
-    uses: momentumdash/auto-doc/.github/workflows/extract.yml@v2
-    with: { auto-doc-ref: v2 }
+    uses: momentumdash/auto-doc/.github/workflows/extract.yml@main
+    with: { auto-doc-ref: main }
     permissions:
       contents: read
       pull-requests: write
@@ -92,8 +92,8 @@ on:
   pull_request: { types: [closed] }
 jobs:
   integrate:
-    uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v2
-    with: { auto-doc-ref: v2 }
+    uses: momentumdash/auto-doc/.github/workflows/integrate.yml@main
+    with: { auto-doc-ref: main }
     permissions:
       contents: write
       pull-requests: write
@@ -114,8 +114,8 @@ on:
   workflow_dispatch:
 jobs:
   cleanup:
-    uses: momentumdash/auto-doc/.github/workflows/cleanup.yml@v2
-    with: { auto-doc-ref: v2 }
+    uses: momentumdash/auto-doc/.github/workflows/cleanup.yml@main
+    with: { auto-doc-ref: main }
     permissions:
       contents: write
       pull-requests: write
@@ -135,8 +135,8 @@ on:
   issue_comment: { types: [created] }
 jobs:
   respond:
-    uses: momentumdash/auto-doc/.github/workflows/respond.yml@v2
-    with: { auto-doc-ref: v2 }
+    uses: momentumdash/auto-doc/.github/workflows/respond.yml@main
+    with: { auto-doc-ref: main }
     permissions:
       contents: write
       pull-requests: write
@@ -211,10 +211,10 @@ many review comments.
 
 ## Inputs
 
-Every workflow takes `auto-doc-ref` (default `v2`) — the ref of this repo whose
-scripts get checked out. Callers pin the floating major tag, `@v2` with
-`auto-doc-ref: v2`, so a release never needs a change in the calling repos. Keep
-the two equal; the input only has to differ if you pin a SHA instead.
+Every workflow takes `auto-doc-ref` (default `main`) — the ref of this repo whose
+scripts get checked out. Callers use `@main` with `auto-doc-ref: main`, so a
+merge here reaches every caller without a change in the calling repos. Keep the
+two equal; the input only has to differ if you pin a SHA instead.
 
 `integrate.yml` and `cleanup.yml` also take:
 
@@ -411,15 +411,16 @@ doc PR body. This allowlist lives in the prompt, not in code; see
 
 **Never use `secrets: inherit` to call these.** Inherit passes the caller's
 *entire* secret set, not just the secrets the called workflow declares. This
-workflow is defined in a public repo behind a movable `v2` tag, so anyone who
-can push here could repoint the tag and receive every secret the calling repo
+workflow is defined in a public repo behind the moving `main` branch, so anyone
+who can merge here could change what runs and receive every secret the calling repo
 holds — release signing keys, store credentials, deploy tokens. The examples
 name the three secrets explicitly; keep it that way.
 
-**Protect the `v2` tag, or pin callers to a SHA.** `AUTO_DOC_APP_PRIVATE_KEY`
-is an org-wide credential, so whatever `v2` resolves to at run time is trusted
-with it. A tag ruleset that restricts who can move `v2` restores roughly the
-protection the code had when it lived inside a branch-protected repo.
+**`main` is the gate for the org credential.** `AUTO_DOC_APP_PRIVATE_KEY` is an
+org-wide credential, and callers run whatever `main` holds at run time with it.
+The only control is `main`'s required-PR ruleset, so keep it on, and review
+every PR to this repo as code that runs with that key. A caller that wants
+stronger isolation can pin a SHA in both the `uses` line and `auto-doc-ref`.
 
 **The extractor never checks out the calling repo.** It only talks to the API,
 so no code from a PR under review is executed. The integrator does check out —
@@ -471,29 +472,11 @@ ask for an edit, not just propose one.
 
 ## Releasing
 
-Callers pin the floating major tag, `@v2` with `auto-doc-ref: v2`, so a release
-never needs a change in the calling repos. `v2` is moved by hand:
-
-1. Merge the change to `main`.
-2. Tag a `main` commit `v2.x.y` and push it:
-   ```sh
-   git fetch origin main
-   git tag v2.x.y origin/main
-   git push origin v2.x.y
-   ```
-3. Move `v2` to that commit. The `protect release tags` ruleset on
-   `refs/tags/v*` blocks tag updates, so disable it in Settings → Rules, then:
-   ```sh
-   git tag -f v2 v2.x.y
-   git push --force origin refs/tags/v2
-   ```
-   and set enforcement back to **Active**.
-4. To roll back, do step 3 again with the previous release (`git tag -f v2 v2.2.0`).
-
-A breaking change gets a new major (`v3.0.0`, then `v3`), and callers move to
-`@v3` deliberately. `v2` receives `AUTO_DOC_APP_PRIVATE_KEY`, an org-wide
-credential, which is why the ruleset has no bypass actors and moving the tag is
-a deliberate act.
+Callers use `@main` with `auto-doc-ref: main`, so there is no release step:
+merging a PR to `main` makes the change live in every caller on its next run.
+To roll back, merge a revert PR. There are no version tags to opt into a
+breaking change, so land those carefully (or update callers first). Since
+`main` receives `AUTO_DOC_APP_PRIVATE_KEY`, its required-PR ruleset is the gate.
 
 ## Development
 

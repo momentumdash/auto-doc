@@ -11,9 +11,9 @@ on:
 
 jobs:
   cleanup:
-    uses: momentumdash/auto-doc/.github/workflows/cleanup.yml@v2
+    uses: momentumdash/auto-doc/.github/workflows/cleanup.yml@main
     with:
-      auto-doc-ref: v2 # Keep equal to the @ref on the uses line above.
+      auto-doc-ref: main # Keep equal to the @ref on the uses line above.
       # base-branch defaults to the repo's default branch (override here or via the
       # AUTO_DOC_BASE_BRANCH repo variable). reviewers is who gets requested on the
       # cleanup PR: set it per repo (or via the AUTO_DOC_CLEANUP_REVIEWERS variable).

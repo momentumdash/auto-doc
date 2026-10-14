@@ -7,9 +7,9 @@ on:
 
 jobs:
   integrate:
-    uses: momentumdash/auto-doc/.github/workflows/integrate.yml@v2
+    uses: momentumdash/auto-doc/.github/workflows/integrate.yml@main
     with:
-      auto-doc-ref: v2 # Keep equal to the @ref on the uses line above.
+      auto-doc-ref: main # Keep equal to the @ref on the uses line above.
       # Defaults to the repo's default branch. Override here, or set the
       # AUTO_DOC_BASE_BRANCH repo variable, when doc PRs should target an
       # integration branch instead (e.g. develop).
