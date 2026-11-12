@@ -49,6 +49,15 @@ on:
           Empty requests no one.
         type: string
         default: ''
+      labels:
+        description: >-
+          Comma-separated extra labels to put on the cleanup PR, beside
+          `auto-doc`. Falls back to the AUTO_DOC_CLEANUP_LABELS repo variable.
+          A label the repo doesn't have is skipped, not created. Names are
+          letters, digits, spaces and `. _ : / -`, at most 50 characters; others
+          are dropped with a warning. Empty adds none.
+        type: string
+        default: ''
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: OAuth token for claude-code-action.
@@ -161,6 +170,7 @@ jobs:
           REPO_NAME: ${{ github.event.repository.name }}
           DOC_STYLE_FILE: ${{ inputs.doc-style-file }}
           REVIEWERS: ${{ inputs.reviewers || vars.AUTO_DOC_CLEANUP_REVIEWERS }}
+          LABELS: ${{ inputs.labels || vars.AUTO_DOC_CLEANUP_LABELS }}
           SUPERSEDES: ${{ steps.previous.outputs.numbers }}
           AUTO_DOC_IGNORE_AUTHORS: ${{ vars.AUTO_DOC_IGNORE_AUTHORS }}
         run: |

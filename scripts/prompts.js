@@ -87,9 +87,20 @@ When opening the PR (you are already on the branch you created in Step 1):
 
 export function cleanupPrompt(ctx) {
 	const reviewers = ctx.reviewers || [] // already trimmed/validated in build-prompt.js
-	const reviewerStep = reviewers.length
-		? `  e. Request review from the configured reviewers: \`gh pr edit <pr-number> --add-reviewer ${reviewers.join(',')}\`. If a login can't be added (not a collaborator), note it in the PR body and continue — don't fail the run.\n`
-		: ''
+	const labels = ctx.labels || [] // already validated in build-prompt.js
+	// The body went in via --body-file at 5c, so a note means appending to that file and re-applying it.
+	const noteInBody = 'append a line saying so to `/tmp/auto-doc-cleanup-body.md`, then run `gh pr edit <pr-number> --body-file /tmp/auto-doc-cleanup-body.md`'
+	// Labels are added after the PR exists, not via `gh pr create --label`, which refuses to open the PR when a label is missing (the branch is already pushed).
+	// Letters continue 5d, so they're derived from which optional steps are present.
+	const optionalSteps = [
+		reviewers.length &&
+			`Request review from the configured reviewers: \`gh pr edit <pr-number> --add-reviewer ${reviewers.join(',')}\`. If a login can't be added (not a collaborator), ${noteInBody}.`,
+		labels.length &&
+			`Add the configured extra labels. \`<pr-number>\` is the number noted in 5c. Run each command as its own Bash call, so a missing label doesn't block the others:\n${labels.map(l => `     gh pr edit <pr-number> --add-label '${l}'`).join('\n')}\n     \`gh pr edit\` errors on a missing label: skip it and ${noteInBody}.`,
+	]
+		.filter(Boolean)
+		.map((step, i) => `  ${'ef'[i]}. ${step}\n`)
+		.join('')
 	const ignoreAuthors = ctx.ignoreAuthors
 	const ignoreClause = ignoreAuthors.length
 		? `, and isn't one of these automation logins (case-insensitive): ${ignoreAuthors.join(', ')}`
@@ -162,7 +173,7 @@ Apply the policy above. Keep each change small and self-contained so a human can
      gh pr create --base ${ctx.baseBranch} --title 'Auto-doc: weekly docs cleanup' --body-file /tmp/auto-doc-cleanup-body.md --label auto-doc --head <branch-name>
      Write the body (5d) to \`/tmp/auto-doc-cleanup-body.md\` with the Write tool first.
   d. PR body: a short summary of what you changed and why, plus a "Contradictions to reconcile" section for anything from Step 4 you deliberately left for a human.
-${reviewerStep}
+${optionalSteps}
 ## Step 6 — Leave an inline comment on each non-trivial change
 
 This is how a human keeps, drops, or adjusts each edit. For every non-trivial hunk (skip pure typo/whitespace fixes):

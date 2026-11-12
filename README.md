@@ -179,6 +179,7 @@ Set these at the org level so new repos need nothing but the workflow files.
 | `AUTO_DOC_USE_APP` | variable | no | `'true'` to mint an App token instead of using `GITHUB_TOKEN`. |
 | `AUTO_DOC_BASE_BRANCH` | variable | no | Branch doc PRs target. Defaults to the repo's default branch. |
 | `AUTO_DOC_CLEANUP_REVIEWERS` | variable | no | Logins to request review from on the weekly cleanup PR. See [Weekly cleanup](#weekly-cleanup). |
+| `AUTO_DOC_CLEANUP_LABELS` | variable | no | Extra labels for the weekly cleanup PR. See [Weekly cleanup](#weekly-cleanup). |
 | `AUTO_DOC_IGNORE_AUTHORS` | variable | no | Comma-separated automation logins the bot skips: never classified by the extractor, never counted in the integrator's reaction gate, skipped by `respond.yml`, and not read as review feedback when cleanup supersedes a PR, beyond bot accounts. See [Ignored authors](#ignored-authors). |
 
 Without a GitHub App the bot posts as `github-actions[bot]`, and **doc PRs it
@@ -232,6 +233,12 @@ two equal; the input only has to differ if you pin a SHA instead.
   cleanup PR, resolved as input → `vars.AUTO_DOC_CLEANUP_REVIEWERS`. The
   integrator infers reviewers from the source-comment authors, but a scheduled
   cleanup has none, so name them per repo. Empty requests no one.
+- `labels` — comma-separated extra labels to put on the cleanup PR beside
+  `auto-doc` (say, a label another bot keys on), resolved as input →
+  `vars.AUTO_DOC_CLEANUP_LABELS`. A label the repo doesn't have is skipped and
+  noted in the PR body, never created. Names are limited to letters, digits,
+  spaces and `. _ : / -`, up to 50 characters, starting with a letter or digit;
+  anything else is dropped with a `::warning::` in the run log. Empty adds none.
 
 ## Weekly cleanup
 
