@@ -70,7 +70,13 @@ if (which === 'integrate') {
 			labels: (env.LABELS || '')
 				.split(',')
 				.map(s => s.trim())
-				.filter(label => /^[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,49}$/.test(label)),
+				.filter(Boolean)
+				.filter(label => {
+					const ok = /^[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,49}$/.test(label)
+					// stderr only: stdout is the prompt, redirected to $GITHUB_OUTPUT.
+					if (!ok) console.error(`::warning::auto-doc: dropped label "${label}" (unsupported characters or longer than 50)`)
+					return ok
+				}),
 			// Open cleanup PRs this run supersedes (cleanup-supersede.js find), so
 			// the agent carries their review feedback forward.
 			supersedes: (env.SUPERSEDES || '').split(' ').filter(n => /^\d+$/.test(n)),

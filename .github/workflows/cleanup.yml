@@ -53,7 +53,9 @@ on:
         description: >-
           Comma-separated extra labels to put on the cleanup PR, beside
           `auto-doc`. Falls back to the AUTO_DOC_CLEANUP_LABELS repo variable.
-          A label the repo doesn't have is skipped, not created. Empty adds none.
+          A label the repo doesn't have is skipped, not created. Names are
+          letters, digits, spaces and `. _ : / -`, at most 50 characters; others
+          are dropped with a warning. Empty adds none.
         type: string
         default: ''
     secrets:

@@ -277,12 +277,29 @@ const supersedeRender = runBuild(['cleanup'], { REPO_OWNER: 'o', REPO_NAME: 'r',
 assert.match(supersedeRender, /pullRequest\(number:3\)/)
 assert.match(supersedeRender, /automation logins \(case-insensitive\): bot1/)
 assert.doesNotMatch(supersedeRender, /x5/)
-// Extra labels land via `gh pr edit` (never `gh pr create --label`, which fails on a missing label), and
-// anything outside the label charset (a quote, a semicolon) is dropped before it reaches the shell.
-const labelRender = runBuild(['cleanup'], { REPO_OWNER: 'o', REPO_NAME: 'r', BASE_BRANCH: 'main', LABELS: "mediator-notify-conflicts, bad';rm -rf x" })
-assert.match(labelRender, /`gh pr edit <pr-number> --add-label 'mediator-notify-conflicts'`/)
+// Extra labels land via `gh pr edit`, one Bash call each, never on the `gh pr create` line, and anything
+// outside the label charset (a quote, a semicolon) is dropped before it reaches the shell.
+const labelEnv = { REPO_OWNER: 'o', REPO_NAME: 'r', BASE_BRANCH: 'main' }
+const labelRender = runBuild(['cleanup'], { ...labelEnv, LABELS: "mediator-notify-conflicts, docs, bad';rm -rf x" })
+assert.match(labelRender, /^ {5}gh pr edit <pr-number> --add-label 'mediator-notify-conflicts'$/m)
+assert.match(labelRender, /^ {5}gh pr edit <pr-number> --add-label 'docs'$/m)
+assert.doesNotMatch(labelRender, /--add-label '[^'\n]*'[^\n]*--add-label/)
+assert.doesNotMatch(labelRender, /gh pr create[^\n]*--label '/)
 assert.doesNotMatch(labelRender, /rm -rf/)
-assert.doesNotMatch(runBuild(['cleanup'], { REPO_OWNER: 'o', REPO_NAME: 'r', BASE_BRANCH: 'main' }), /--add-label/)
+// Without reviewers the label step continues the lettering at e; with reviewers it is f.
+assert.match(labelRender, /^ {2}e\. Add the configured extra labels/m)
+assert.match(runBuild(['cleanup'], { ...labelEnv, LABELS: 'docs', REVIEWERS: 'octocat' }), /^ {2}f\. Add the configured extra labels/m)
+const noLabelRender = runBuild(['cleanup'], labelEnv)
+assert.doesNotMatch(noLabelRender, /extra labels/)
+assert.doesNotMatch(noLabelRender, /--add-label/)
+// A rejected label is reported on stderr (stdout is the prompt).
+const labelWarn = spawnSync('node', ['build-prompt.js', 'cleanup'], {
+	cwd: import.meta.dirname,
+	env: { ...process.env, ...labelEnv, LABELS: 'docs,x(y)' },
+	encoding: 'utf-8',
+})
+assert.match(labelWarn.stderr, /^::warning::auto-doc: dropped label "x\(y\)"/m)
+assert.doesNotMatch(labelWarn.stdout, /::warning::/)
 // And cleanup.yml feeds find's output to the prompt and to the close step.
 const cleanupYml = fs.readFileSync(path.join(import.meta.dirname, '../.github/workflows/cleanup.yml'), 'utf-8')
 assert.match(cleanupYml, /id: previous\n[^]*?run: node _auto-doc\/scripts\/cleanup-supersede\.js find\n/)

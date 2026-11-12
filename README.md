@@ -237,7 +237,8 @@ two equal; the input only has to differ if you pin a SHA instead.
   `auto-doc` (say, a label another bot keys on), resolved as input →
   `vars.AUTO_DOC_CLEANUP_LABELS`. A label the repo doesn't have is skipped and
   noted in the PR body, never created. Names are limited to letters, digits,
-  spaces and `. _ : / -`; anything else is dropped. Empty adds none.
+  spaces and `. _ : / -`, up to 50 characters, starting with a letter or digit;
+  anything else is dropped with a `::warning::` in the run log. Empty adds none.
 
 ## Weekly cleanup
 
