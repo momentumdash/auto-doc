@@ -19,6 +19,7 @@ jobs:
       # cleanup PR: set it per repo (or via the AUTO_DOC_CLEANUP_REVIEWERS variable).
       # base-branch: develop
       # reviewers: your-github-login          # comma-separated for several
+      # labels: some-label                    # extra labels on the cleanup PR; must already exist
     # Declared here, not just in the called workflow: a reusable workflow
     # cannot grant its job more than the caller's GITHUB_TOKEN already has,
     # so a repo defaulting to read-only would silently cap these.

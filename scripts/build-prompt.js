@@ -65,6 +65,12 @@ if (which === 'integrate') {
 				.split(',')
 				.map(s => s.trim())
 				.filter(login => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?$/.test(login) && !login.endsWith('-')),
+			// Extra labels for the cleanup PR (empty = none). Validated to a safe
+			// charset because the prompt single-quotes them into a gh command.
+			labels: (env.LABELS || '')
+				.split(',')
+				.map(s => s.trim())
+				.filter(label => /^[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,49}$/.test(label)),
 			// Open cleanup PRs this run supersedes (cleanup-supersede.js find), so
 			// the agent carries their review feedback forward.
 			supersedes: (env.SUPERSEDES || '').split(' ').filter(n => /^\d+$/.test(n)),

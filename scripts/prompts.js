@@ -90,6 +90,10 @@ export function cleanupPrompt(ctx) {
 	const reviewerStep = reviewers.length
 		? `  e. Request review from the configured reviewers: \`gh pr edit <pr-number> --add-reviewer ${reviewers.join(',')}\`. If a login can't be added (not a collaborator), note it in the PR body and continue — don't fail the run.\n`
 		: ''
+	// Added after the PR exists, not via `gh pr create --label`, which fails (and loses the PR) on a missing label.
+	const labelStep = (ctx.labels || []).length
+		? `  f. Add the configured extra labels, one command per label so a missing one doesn't block the others: ${ctx.labels.map(l => `\`gh pr edit <pr-number> --add-label '${l}'\``).join(', ')}. If a label doesn't exist in the repo, do NOT create it: note it in the PR body and continue — don't fail the run.\n`
+		: ''
 	const ignoreAuthors = ctx.ignoreAuthors
 	const ignoreClause = ignoreAuthors.length
 		? `, and isn't one of these automation logins (case-insensitive): ${ignoreAuthors.join(', ')}`
@@ -162,7 +166,7 @@ Apply the policy above. Keep each change small and self-contained so a human can
      gh pr create --base ${ctx.baseBranch} --title 'Auto-doc: weekly docs cleanup' --body-file /tmp/auto-doc-cleanup-body.md --label auto-doc --head <branch-name>
      Write the body (5d) to \`/tmp/auto-doc-cleanup-body.md\` with the Write tool first.
   d. PR body: a short summary of what you changed and why, plus a "Contradictions to reconcile" section for anything from Step 4 you deliberately left for a human.
-${reviewerStep}
+${reviewerStep}${labelStep}
 ## Step 6 — Leave an inline comment on each non-trivial change
 
 This is how a human keeps, drops, or adjusts each edit. For every non-trivial hunk (skip pure typo/whitespace fixes):

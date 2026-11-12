@@ -277,10 +277,17 @@ const supersedeRender = runBuild(['cleanup'], { REPO_OWNER: 'o', REPO_NAME: 'r',
 assert.match(supersedeRender, /pullRequest\(number:3\)/)
 assert.match(supersedeRender, /automation logins \(case-insensitive\): bot1/)
 assert.doesNotMatch(supersedeRender, /x5/)
+// Extra labels land via `gh pr edit` (never `gh pr create --label`, which fails on a missing label), and
+// anything outside the label charset (a quote, a semicolon) is dropped before it reaches the shell.
+const labelRender = runBuild(['cleanup'], { REPO_OWNER: 'o', REPO_NAME: 'r', BASE_BRANCH: 'main', LABELS: "mediator-notify-conflicts, bad';rm -rf x" })
+assert.match(labelRender, /`gh pr edit <pr-number> --add-label 'mediator-notify-conflicts'`/)
+assert.doesNotMatch(labelRender, /rm -rf/)
+assert.doesNotMatch(runBuild(['cleanup'], { REPO_OWNER: 'o', REPO_NAME: 'r', BASE_BRANCH: 'main' }), /--add-label/)
 // And cleanup.yml feeds find's output to the prompt and to the close step.
 const cleanupYml = fs.readFileSync(path.join(import.meta.dirname, '../.github/workflows/cleanup.yml'), 'utf-8')
 assert.match(cleanupYml, /id: previous\n[^]*?run: node _auto-doc\/scripts\/cleanup-supersede\.js find\n/)
 assert.match(cleanupYml, /^ +SUPERSEDES: \$\{\{ steps\.previous\.outputs\.numbers \}\}$/m)
+assert.match(cleanupYml, /^ +LABELS: \$\{\{ inputs\.labels \|\| vars\.AUTO_DOC_CLEANUP_LABELS \}\}$/m)
 const closeStep = cleanupYml.match(/- name: Close superseded cleanup PRs\n[^]*?run: node _auto-doc\/scripts\/cleanup-supersede\.js close\n/)?.[0]
 assert.ok(closeStep, 'cleanup.yml has no close step')
 assert.match(closeStep, /^ +PREVIOUS: \$\{\{ steps\.previous\.outputs\.numbers \}\}$/m)
