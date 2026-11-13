@@ -246,8 +246,14 @@ two equal; the input only has to differ if you pin a SHA instead.
 manually via **Actions → Auto-doc cleanup → Run workflow**). It reads the
 `CLAUDE.md` tree and the `docs/` guides those files link to, then opens one PR
 labeled `auto-doc` with tidy-ups. It never edits code, tests, or config, and it
-never merges. If there's nothing worth changing, it opens no PR. If the agent
-is denied any tool call, the run fails and records nothing.
+never merges. If there's nothing worth changing, it opens no PR. The PR is
+titled with the run date, like its `auto-doc/cleanup-YYYY-MM-DD` branch. If the
+agent is denied a tool call and opens no PR, the run fails and records nothing.
+A denied shell habit (`grep`, `ls`, `cd`, `cat`, `head`, `sed`, `wc`, `sort`, or
+a `for`/`while` loop) in a run that did open its PR shows as a run-page warning,
+and the run still records the base, so next week skips if nothing changed. Any
+other denial (another tool, `curl`, an unknown command) fails the run even with
+a PR.
 
 **Skips unchanged weeks.** After each successful run, manual ones included, the
 workflow records the base-branch commit it reviewed at `refs/auto-doc/cleanup`,
@@ -277,11 +283,15 @@ base branch and replaces any cleanup PR still open (bot-opened, labeled
 `auto-doc`, from an `auto-doc/cleanup-*` branch; every one of them if there are
 several).
 
-Before editing, the agent reads those PRs' review feedback from repo owners,
-members, and collaborators. The prompt asks it to skip changes someone reverted
-or rejected there, to keep wording the responder already changed at someone's
-request, and to carry forward feedback nobody acted on yet. That's the agent's
-judgment, not a check, and the same goes for skipping `AUTO_DOC_IGNORE_AUTHORS`.
+Before the agent starts, the workflow fetches those PRs' review feedback from
+repo owners, members, and collaborators (minus `AUTO_DOC_IGNORE_AUTHORS`), plus
+the replies of the bot that opened each PR (other bots, CodeRabbit included, are
+dropped), and puts it in the agent's prompt, so no denied command can keep it
+from the agent. Each item is cut at 4,000 characters and the total at 80,000,
+with a run-page warning when anything is cut. The prompt asks it to skip changes someone reverted or rejected
+there, to keep wording the responder already changed at someone's request, and
+to carry forward feedback nobody acted on yet. That part is the agent's
+judgment, not a check.
 
 Once its own PR is open, the workflow comments on each old PR with a link and
 closes it, and adds `Supersedes #N` to the new PR's body. The old branch is
@@ -292,7 +302,10 @@ body says why, when:
   doesn't count, and a person's edits inside such a merge's conflict
   resolution aren't detected;
 - an owner, member, or collaborator (minus `AUTO_DOC_IGNORE_AUTHORS`)
-  commented or submitted a review after this run started.
+  commented or submitted a review after the workflow fetched the feedback;
+- it has more feedback than the workflow reads (the newest 100 comments, 100
+  reviews, 100 threads and 50 comments per thread), since the rest never
+  reached the agent.
 
 It also stays open, untouched, when the run opens no PR (including a skipped
 week) and when the lookup before the agent fails. A PR that fails to close is

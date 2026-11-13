@@ -77,10 +77,11 @@ if (which === 'integrate') {
 					if (!ok) console.error(`::warning::auto-doc: dropped label "${label}" (unsupported characters or longer than 50)`)
 					return ok
 				}),
-			// Open cleanup PRs this run supersedes (cleanup-supersede.js find), so
-			// the agent carries their review feedback forward.
-			supersedes: (env.SUPERSEDES || '').split(' ').filter(n => /^\d+$/.test(n)),
-			ignoreAuthors,
+			// Review feedback on the open cleanup PRs this run supersedes
+			// (cleanup-supersede.js find), keyed by PR number.
+			feedback: Object.fromEntries(Object.entries(JSON.parse(env.FEEDBACK || '{}')).filter(([n]) => /^\d+$/.test(n))),
+			// Names the branch and titles the PR, so duplicates tell apart in the PR list.
+			date: new Date().toISOString().slice(0, 10),
 		})
 	)
 } else {
