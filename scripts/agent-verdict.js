@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 // GitHub's workflow-command escaping, so a denied command can't end its own
 // ::error:: line and inject another workflow command.
-const escapeData = s => s.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')
+export const escapeData = s => s.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')
 
 /** One line per denied call: the tool plus its command or file, capped. */
 export function deniedCalls(messages) {
@@ -18,16 +18,20 @@ export function deniedCalls(messages) {
 	)
 }
 
+/** deniedCalls for an execution file; an unreadable one counts as a denial. */
+export function readDeniedCalls(file) {
+	try {
+		return deniedCalls(JSON.parse(fs.readFileSync(file, 'utf-8')))
+	} catch {
+		return ['no readable execution file from the agent']
+	}
+}
+
 // CLI only when run directly, so test.js can import deniedCalls. Real paths:
 // Node resolves symlinks for import.meta.url, and a mismatch would skip the
 // check and pass silently.
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-	let denied
-	try {
-		denied = deniedCalls(JSON.parse(fs.readFileSync(process.argv[2], 'utf-8')))
-	} catch {
-		denied = ['no readable execution file from the agent']
-	}
+	const denied = readDeniedCalls(process.argv[2])
 	for (const line of denied) console.log(`::error::${escapeData(line)}`)
 	if (denied.length) process.exit(1)
 }

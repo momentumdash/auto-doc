@@ -1,12 +1,17 @@
 /* global process */
 // Replaces last week's open cleanup PR with this run's, so review feedback never
 // lands on a PR that conflicts with the base or still runs a stale auto-doc pin.
-//   find   before the agent: writes numbers=<open cleanup PRs> and since=<now>
-//          to $GITHUB_OUTPUT
-//   close  after it, PREVIOUS=<numbers> SINCE=<since>: closes each in favour of
-//          the new PR
+//   find     before the agent: writes numbers=<open cleanup PRs>, since=<now>,
+//            and feedback=<their review feedback as one-line JSON, for the
+//            prompt> to $GITHUB_OUTPUT
+//   verdict  after it, SINCE=<since> <execution_file>: writes pr=<the PR this
+//            run opened> and fails on denied tool calls only when there is none
+//   close    then, PREVIOUS=<numbers> NEW_PR=<pr> SINCE=<since>: closes each in
+//            favour of the new PR
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { escapeData, readDeniedCalls } from './agent-verdict.js'
 import { isCleanupPr } from './cleanup-gate.js'
 import { ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
 
@@ -16,26 +21,46 @@ import { ignoredAuthorLogins, isIgnoredAuthor } from './github-comments.js'
 // parents if that ever bites. A commit with no linked account counts as a person's.
 const isHumanCommit = c => c.parents < 2 && c.author !== 'Bot'
 
-// The same people whose feedback the cleanup agent reads (prompts.js).
+// Feedback counts from people with write access, as respond.yml requires.
 const WRITE_ACCESS = ['OWNER', 'MEMBER', 'COLLABORATOR']
+const isPerson = (f, ignored) => WRITE_ACCESS.includes(f.assoc) && !isIgnoredAuthor(f, ignored)
 
 /**
- * Closes every PR in `previous` in favour of the newest cleanup PR opened since,
- * and notes the outcome in that PR's body. `since` is when this run started;
- * `ignored` is the AUTO_DOC_IGNORE_AUTHORS set. Returns workflow annotations
- * for the step log.
+ * The part of one PR's `feedback` the agent reads: what people said, plus bot
+ * replies, which show what was already applied. Drops empty bodies and anyone
+ * else, so a drive-by commenter's text never reaches the prompt.
  */
-export function supersede({ previous, since, ignored }, api) {
+export function promptFeedback({ comments, reviews, threads }, ignored) {
+	const keep = f => f.body && (f.type === 'Bot' || isPerson(f, ignored))
+	return {
+		comments: comments.filter(keep),
+		reviews: reviews.filter(keep),
+		threads: threads.map(t => ({ ...t, comments: t.comments.filter(keep) })).filter(t => t.comments.length),
+	}
+}
+
+/**
+ * Denied tool calls fail the run only when the agent opened no PR. The old PRs'
+ * feedback is in the prompt, so a denial can't have hidden it from the agent,
+ * and a PR means the run did its job; the denials stay visible as warnings.
+ */
+export function verdict(denied, newPr) {
+	return denied.map(line => `::${newPr ? 'warning' : 'error'}::${escapeData(line)}`)
+}
+
+const feedbackItems = ({ comments, reviews, threads }) => [...comments, ...reviews, ...threads.flatMap(t => t.comments)]
+
+/**
+ * Closes every PR in `previous` in favour of `newPr`, the one this run opened,
+ * and notes the outcome in its body. `since` is when this run fetched their
+ * feedback; `ignored` is the AUTO_DOC_IGNORE_AUTHORS set. Returns workflow
+ * annotations for the step log.
+ */
+export function supersede({ previous, newPr, since, ignored }, api) {
 	const list = previous.map(n => `#${n}`).join(', ')
 	const sinceMs = Date.parse(since)
 	if (Number.isNaN(sinceMs)) return [`::error::SINCE is not a timestamp (${since}), so ${list} stays open.`]
-	const isLateFeedback = f =>
-		Date.parse(f.at) > sinceMs && WRITE_ACCESS.includes(f.assoc) && !isIgnoredAuthor({ type: f.type, login: f.login }, ignored)
-
-	const newPr = api
-		.openCleanupPrs()
-		.filter(n => n > Math.max(...previous))
-		.at(-1)
+	const isLateFeedback = f => Date.parse(f.at) > sinceMs && isPerson(f, ignored)
 	if (!newPr) return [`::warning::No new cleanup PR found, so ${list} stays open.`]
 
 	const closed = []
@@ -46,7 +71,7 @@ export function supersede({ previous, since, ignored }, api) {
 			if (!api.isOpen(n)) continue
 			if (api.commits(n).some(isHumanCommit)) {
 				notes.push(`#${n} stays open because it has commits from a person. Reconcile it with this PR by hand.`)
-			} else if (api.feedback(n).some(isLateFeedback)) {
+			} else if (feedbackItems(api.feedback(n)).some(isLateFeedback)) {
 				notes.push(`#${n} stays open because it got review feedback after this run started. Carry that over by hand.`)
 			} else {
 				api.close(n, `Superseded by #${newPr}, which re-runs the cleanup against the current base branch and carries this PR's open feedback forward. Feedback left here from now on won't be read.`)
@@ -78,12 +103,11 @@ function ghApi() {
 					'--paginate',
 					`repos/${repo}/pulls?state=open&base=${encodeURIComponent(process.env.BASE_BRANCH)}&per_page=100`,
 					'--jq',
-					'.[] | {number, head_ref: .head.ref, user: {type: .user.type}, labels: [.labels[].name]}',
+					'.[] | {number, created_at, head_ref: .head.ref, user: {type: .user.type}, labels: [.labels[].name]}',
 				])
 			)
 				.filter(isCleanupPr)
-				.map(pr => pr.number)
-				.sort((a, b) => a - b),
+				.sort((a, b) => a.number - b.number),
 		isOpen: n => gh(['api', `repos/${repo}/pulls/${n}`, '--jq', '.state']) === 'open',
 		commits: n =>
 			ndjson(
@@ -95,17 +119,17 @@ function ghApi() {
 					'.[] | {parents: (.parents | length), author: .author.type}',
 				])
 			),
-		// Comments and submitted reviews as {at, login, type, assoc}. Inline
-		// comments and replies each arrive as a review, so two connections cover
-		// it all. A review's createdAt is when it was started, possibly hours
-		// before it was submitted.
+		// {comments, reviews, threads}, each item {at, login, type, assoc, body}.
+		// A review's createdAt is when it was started, possibly hours before it
+		// was submitted. The newest feedback is the most likely unacted, so the
+		// caps keep the last items.
 		feedback: n =>
-			ndjson(
+			JSON.parse(
 				gh([
 					'api',
 					'graphql',
 					'-f',
-					'query=query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ comments(last:50){ nodes{ createdAt authorAssociation author{ __typename login } } } reviews(last:50){ nodes{ submittedAt authorAssociation author{ __typename login } } } } } }',
+					'query=query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ comments(last:100){ nodes{ createdAt authorAssociation author{ __typename login } body } } reviews(last:100){ nodes{ submittedAt authorAssociation author{ __typename login } state body } } reviewThreads(last:100){ nodes{ isResolved path line comments(last:50){ nodes{ createdAt authorAssociation author{ __typename login } body } } } } } } }',
 					'-f',
 					`owner=${repo.split('/')[0]}`,
 					'-f',
@@ -113,9 +137,9 @@ function ghApi() {
 					'-F',
 					`number=${n}`,
 					'--jq',
-					'.data.repository.pullRequest | (.comments.nodes[] | .at = .createdAt), (.reviews.nodes[] | .at = .submittedAt) | {at, login: .author.login, type: .author.__typename, assoc: .authorAssociation}',
-					])
-				),
+					'.data.repository.pullRequest | def item: {at, login: .author.login, type: .author.__typename, assoc: .authorAssociation, body}; {comments: [.comments.nodes[] | .at = .createdAt | item], reviews: [.reviews.nodes[] | .at = .submittedAt | item + {state}], threads: [.reviewThreads.nodes[] | {isResolved, path, line, comments: [.comments.nodes[] | .at = .createdAt | item]}]}',
+				])
+			),
 		close: (n, comment) => gh(['pr', 'close', `${n}`, '--repo', repo, '--comment', comment]),
 		appendBody: (n, text) => {
 			const body = gh(['api', `repos/${repo}/pulls/${n}`, '--jq', '.body // ""'])
@@ -124,25 +148,39 @@ function ghApi() {
 	}
 }
 
-if (import.meta.filename === process.argv[1]) {
+// Real paths, as in agent-verdict.js: the verdict must never skip silently.
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	const api = ghApi()
+	const since = process.env.SINCE
 	if (process.argv[2] === 'find') {
-		let numbers = []
+		// Before the fetch, so feedback that lands during it counts as late.
+		const started = new Date().toISOString()
+		let feedback = {}
 		try {
-			numbers = api.openCleanupPrs()
+			const ignored = ignoredAuthorLogins()
+			feedback = Object.fromEntries(api.openCleanupPrs().map(({ number }) => [number, promptFeedback(api.feedback(number), ignored)]))
 		} catch (error) {
-			// Errs toward running the cleanup: the old PR just stays open, as before.
-			console.log(`::warning::Could not list open cleanup PRs: ${error.message.split('\n')[0]}`)
+			// Errs toward running the cleanup: the old PRs just stay open, as before.
+			console.log(`::warning::Could not read open cleanup PRs: ${error.message.split('\n')[0]}`)
 		}
+		const numbers = Object.keys(feedback)
 		console.log(numbers.length ? `Open cleanup PRs to supersede: ${numbers.join(', ')}` : 'No open cleanup PR to supersede.')
-		fs.appendFileSync(process.env.GITHUB_OUTPUT, `numbers=${numbers.join(' ')}\nsince=${new Date().toISOString()}\n`)
+		// One line of JSON: no comment text can end a GITHUB_OUTPUT entry.
+		fs.appendFileSync(process.env.GITHUB_OUTPUT, `numbers=${numbers.join(' ')}\nsince=${started}\nfeedback=${JSON.stringify(feedback)}\n`)
+	} else if (process.argv[2] === 'verdict') {
+		const newPr = api.openCleanupPrs().filter(pr => Date.parse(pr.created_at) >= Date.parse(since)).at(-1)?.number
+		const annotations = verdict(readDeniedCalls(process.argv[3]), newPr)
+		console.log(newPr ? `This run opened #${newPr}.` : 'This run opened no cleanup PR.')
+		for (const line of annotations) console.log(line)
+		fs.appendFileSync(process.env.GITHUB_OUTPUT, `pr=${newPr ?? ''}\n`)
+		if (annotations.some(line => line.startsWith('::error::'))) process.exit(1)
 	} else if (process.argv[2] === 'close') {
 		const previous = (process.env.PREVIOUS || '').split(' ').filter(Boolean).map(Number)
-		const annotations = supersede({ previous, since: process.env.SINCE, ignored: ignoredAuthorLogins() }, api)
+		const annotations = supersede({ previous, newPr: Number(process.env.NEW_PR) || undefined, since, ignored: ignoredAuthorLogins() }, api)
 		for (const line of annotations) console.log(line)
 		if (annotations.some(line => line.startsWith('::error::'))) process.exit(1)
 	} else {
-		console.error(`cleanup-supersede: expected 'find' or 'close', got: ${process.argv[2]}`)
+		console.error(`cleanup-supersede: expected 'find', 'verdict', or 'close', got: ${process.argv[2]}`)
 		process.exit(1)
 	}
 }

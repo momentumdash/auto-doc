@@ -7,11 +7,11 @@
 # can keep, drop, or adjust it. It never touches code, tests, or config, and it
 # never merges. If there's nothing worth changing it opens no PR.
 #
-# A new cleanup PR supersedes any still-open one: the agent first carries that
-# PR's unaddressed review feedback forward, and once its own PR is open the
-# workflow closes the old one with a link. An old PR stays open when this run
-# opens nothing, when a person has pushed commits to it, or when it got feedback
-# after this run started.
+# A new cleanup PR supersedes any still-open one: the workflow puts that PR's
+# review feedback in the agent's prompt so it carries forward, and once the
+# agent's own PR is open the workflow closes the old one with a link. An old PR
+# stays open when this run opens nothing, when a person has pushed commits to
+# it, or when it got feedback after the workflow fetched it.
 #
 # A scheduled run skips before the agent starts when nothing but cleanup PRs
 # has landed on the base branch since the last successful cleanup. The last
@@ -156,11 +156,12 @@ jobs:
           permission-pull-requests: write
           permission-issues: write
 
-      # Before the agent, so it can carry their review feedback forward.
+      # Before the agent, so their review feedback goes in its prompt.
       - name: Find open cleanup PRs to supersede
         id: previous
         env:
           GH_TOKEN: ${{ github.token }}
+          AUTO_DOC_IGNORE_AUTHORS: ${{ vars.AUTO_DOC_IGNORE_AUTHORS }}
         run: node _auto-doc/scripts/cleanup-supersede.js find
 
       - name: Build cleanup prompt
@@ -171,8 +172,7 @@ jobs:
           DOC_STYLE_FILE: ${{ inputs.doc-style-file }}
           REVIEWERS: ${{ inputs.reviewers || vars.AUTO_DOC_CLEANUP_REVIEWERS }}
           LABELS: ${{ inputs.labels || vars.AUTO_DOC_CLEANUP_LABELS }}
-          SUPERSEDES: ${{ steps.previous.outputs.numbers }}
-          AUTO_DOC_IGNORE_AUTHORS: ${{ vars.AUTO_DOC_IGNORE_AUTHORS }}
+          FEEDBACK: ${{ steps.previous.outputs.feedback }}
         run: |
           {
             echo 'prompt<<__AUTO_DOC_EOF__'
@@ -210,16 +210,22 @@ jobs:
           sparse-checkout: scripts
 
       # The action ends green even when the agent was denied tools, so judge its
-      # execution file before any later step treats the run as done.
+      # execution file before any later step treats the run as done. Denials
+      # fail the run only when the agent opened no PR; with one, they're
+      # warnings, since the old PRs' feedback reached it through the prompt.
       - name: Check agent result
+        id: verdict
         if: ${{ steps.agent.outcome == 'success' }}
         env:
+          GH_TOKEN: ${{ github.token }}
           EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
-        run: node _auto-doc/scripts/agent-verdict.js "$EXECUTION_FILE"
+          SINCE: ${{ steps.previous.outputs.since }}
+        run: node _auto-doc/scripts/cleanup-supersede.js verdict "$EXECUTION_FILE"
 
-      # Only after the agent succeeds, so a failed or cancelled run doesn't count
-      # as a review. A ref outside refs/heads and refs/tags: branch and tag
-      # rulesets don't cover it and it never shows up as a branch. Pushed with an
+      # Only after the result check passes, so a failed or cancelled run, or one
+      # that was denied and opened nothing, doesn't count as a review. A ref
+      # outside refs/heads and refs/tags: branch and tag rulesets don't cover it
+      # and it never shows up as a branch. Pushed with an
       # explicit GITHUB_TOKEN URL so whatever git auth the agent step left behind
       # doesn't matter.
       - name: Record reviewed base commit
@@ -231,13 +237,14 @@ jobs:
       # After recording, so a failed close fails the run without making next
       # week review the same base again. GITHUB_TOKEN, so the link comment
       # doesn't trigger respond.yml. SINCE keeps open any PR that got feedback
-      # after this run started, which the agent may not have seen; feedback counts from
-      # the same people the agent reads.
+      # after find fetched it for the prompt; feedback counts from the same
+      # people the prompt carries.
       - name: Close superseded cleanup PRs
         if: ${{ steps.previous.outputs.numbers != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PREVIOUS: ${{ steps.previous.outputs.numbers }}
+          NEW_PR: ${{ steps.verdict.outputs.pr }}
           SINCE: ${{ steps.previous.outputs.since }}
           AUTO_DOC_IGNORE_AUTHORS: ${{ vars.AUTO_DOC_IGNORE_AUTHORS }}
         run: node _auto-doc/scripts/cleanup-supersede.js close
