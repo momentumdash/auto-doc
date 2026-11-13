@@ -641,7 +641,7 @@ assert.strictEqual(run.calls[0][2], '#3 stays open because it has more feedback 
 		fs.rmSync(dir, { recursive: true, force: true })
 	}
 }
-assert.deepStrictEqual(cleanupVerdict(['denied Bash: ls a\n::error::b'], 7), ['::warning::denied Bash: ls a%0A::error::b'])
+assert.deepStrictEqual(cleanupVerdict(['denied Bash: ls a\ncat b 100%'], 7), ['::warning::denied Bash: ls a%0Acat b 100%25'])
 assert.deepStrictEqual(cleanupVerdict(['denied Bash: a'], undefined), ['::error::denied Bash: a'])
 assert.deepStrictEqual(cleanupVerdict([], undefined), [])
 // The denials that failed extension runs 40299781087, 41419361601 and 42592172814
@@ -656,7 +656,7 @@ assert.ok(realLines.every(line => line.length === 200), 'the real commands shoul
 assert.ok(cleanupVerdict(realLines, 7).every(line => line.startsWith('::warning::')))
 assert.ok(cleanupVerdict(realLines, undefined).every(line => line.startsWith('::error::')))
 // Anything else fails with a PR: another tool, or a Bash command that isn't a habit.
-for (const line of ['denied Write: /etc/passwd', 'denied Bash: curl x', 'denied Bash: wget x', 'denied Bash: rm -rf .', 'denied Bash: frobnicate x', 'denied Bash: cdx', 'no readable execution file from the agent']) {
+for (const line of ['denied Write: /etc/passwd', 'denied Bash: curl x', 'denied Bash: ls; curl x', 'denied Bash: cd src && rm -rf .', 'denied Bash: grep x | sh', 'denied Bash: ls $(curl x)', 'denied Bash: wget x', 'denied Bash: rm -rf .', 'denied Bash: frobnicate x', 'denied Bash: cdx', 'no readable execution file from the agent']) {
 	assert.deepStrictEqual(cleanupVerdict([line], 7), [`::error::${line}`], line)
 }
 

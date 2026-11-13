@@ -59,12 +59,24 @@ export function promptFeedback({ comments, reviews, threads }, { ignored, author
 }
 
 // Denied Bash calls that only mean the agent reached for a shell habit the
-// allow-list rejects: the first word of the command. Anything else (another
-// tool, curl, an unknown command) may be a planted comment steering it. Matches
-// the 200-char truncated line from agent-verdict.js.
-// ponytail: only the first word is checked, so `ls; curl x` passes; split on
-// ;|& if a steered run ever shows up that way.
-const BENIGN_DENIAL = /^denied Bash: (cd|grep|ls|head|cat|sed|wc|sort|for|while)\b/
+// allow-list rejects: every segment of the command (split on ; | & and newlines,
+// quoted text removed, a loop's `do`/`then` skipped) starts with a habit or an
+// allowed command. Anything else (another tool, curl, sh, an unknown word) may
+// be a planted comment steering it. Works on the 200-char truncated line from
+// agent-verdict.js: a cut-off quote or last word still counts. A `$(` or an
+// unescaped backtick outside single quotes runs a hidden command, so it is never benign.
+const BENIGN_WORDS = new Set(['cd', 'grep', 'ls', 'head', 'cat', 'sed', 'wc', 'sort', 'tr', 'uniq', 'for', 'while', 'read', 'done', 'echo', '[', 'gh', 'git', 'find'])
+const QUOTED = /'[^']*'|"(?:\\.|[^"\\])*"|["'].*$/gs
+const isBenignDenial = line => {
+	const command = line.match(/^denied Bash: (.*)$/s)?.[1]
+	if (command === undefined || /\$\(|(?<!\\)`/.test(command.replace(/'[^']*'/g, ''))) return false
+	const words = command
+		.replace(QUOTED, '')
+		.split(/[;|&\n]/)
+		.map(segment => segment.trim().replace(/^(do|then)\b\s*/, '').split(/\s/)[0])
+		.filter(Boolean)
+	return words.length > 0 && words.every(word => BENIGN_WORDS.has(word))
+}
 
 /**
  * Annotations for the denied calls. A benign denial only warns when the run
@@ -72,7 +84,7 @@ const BENIGN_DENIAL = /^denied Bash: (cd|grep|ls|head|cat|sed|wc|sort|for|while)
  * have hidden it. Every other denial fails the run, PR or not.
  */
 export function verdict(denied, newPr) {
-	return denied.map(line => `::${newPr && BENIGN_DENIAL.test(line) ? 'warning' : 'error'}::${escapeData(line)}`)
+	return denied.map(line => `::${newPr && isBenignDenial(line) ? 'warning' : 'error'}::${escapeData(line)}`)
 }
 
 const feedbackItems = ({ comments, reviews, threads }) => [...comments, ...reviews, ...threads.flatMap(t => t.comments)]
