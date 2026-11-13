@@ -5,7 +5,8 @@
 //            and feedback=<their review feedback as one-line JSON, for the
 //            prompt> to $GITHUB_OUTPUT
 //   verdict  after it, SINCE=<since> <execution_file>: writes pr=<the PR this
-//            run opened> and fails on denied tool calls only when there is none
+//            run opened>; fails on a denied call unless it is a benign shell
+//            habit and the run opened a PR
 //   close    then, PREVIOUS=<numbers> NEW_PR=<pr> SINCE=<since>: closes each in
 //            favour of the new PR
 import { execFileSync } from 'node:child_process'
@@ -25,27 +26,53 @@ const isHumanCommit = c => c.parents < 2 && c.author !== 'Bot'
 const WRITE_ACCESS = ['OWNER', 'MEMBER', 'COLLABORATOR']
 const isPerson = (f, ignored) => WRITE_ACCESS.includes(f.assoc) && !isIgnoredAuthor(f, ignored)
 
+// GraphQL names an app `name`, REST `name[bot]`.
+const botName = login => login.replace(/\[bot\]$/, '')
+
+// One env string tops out at 128 KiB on Linux, and the feedback travels in two
+// (the step output, then the prompt), so stay well under it.
+const BODY_LIMIT = 4000
+const TOTAL_LIMIT = 80_000
+
 /**
- * The part of one PR's `feedback` the agent reads: what people said, plus bot
- * replies, which show what was already applied. Drops empty bodies and anyone
- * else, so a drive-by commenter's text never reaches the prompt.
+ * The part of one PR's `feedback` the agent reads: what people said, plus the
+ * PR author's own replies, which show what was already applied. Drops empty
+ * bodies and anyone else (a drive-by commenter, CodeRabbit), so outsider text
+ * never reaches the prompt. Bodies are cut at BODY_LIMIT; once `budget.left` is
+ * spent the rest is dropped. Either sets `budget.clipped`.
  */
-export function promptFeedback({ comments, reviews, threads }, ignored) {
-	const keep = f => f.body && (f.type === 'Bot' || isPerson(f, ignored))
+export function promptFeedback({ comments, reviews, threads }, { ignored, author, budget }) {
+	const clip = f => {
+		if (budget.left <= 0) return (budget.clipped = true), null
+		const body = f.body.length > BODY_LIMIT ? `${f.body.slice(0, BODY_LIMIT)}... [truncated]` : f.body
+		if (body !== f.body) budget.clipped = true
+		budget.left -= body.length
+		return { ...f, body }
+	}
+	const keep = f => f.body && (f.type === 'Bot' ? botName(f.login) === botName(author) : isPerson(f, ignored))
+	const take = items => items.filter(keep).map(clip).filter(Boolean)
 	return {
-		comments: comments.filter(keep),
-		reviews: reviews.filter(keep),
-		threads: threads.map(t => ({ ...t, comments: t.comments.filter(keep) })).filter(t => t.comments.length),
+		comments: take(comments),
+		reviews: take(reviews),
+		threads: threads.map(t => ({ ...t, comments: take(t.comments) })).filter(t => t.comments.length),
 	}
 }
 
+// Denied Bash calls that only mean the agent reached for a shell habit the
+// allow-list rejects: the first word of the command. Anything else (another
+// tool, curl, an unknown command) may be a planted comment steering it. Matches
+// the 200-char truncated line from agent-verdict.js.
+// ponytail: only the first word is checked, so `ls; curl x` passes; split on
+// ;|& if a steered run ever shows up that way.
+const BENIGN_DENIAL = /^denied Bash: (cd|grep|ls|head|cat|sed|wc|sort|for|while)\b/
+
 /**
- * Denied tool calls fail the run only when the agent opened no PR. The old PRs'
- * feedback is in the prompt, so a denial can't have hidden it from the agent,
- * and a PR means the run did its job; the denials stay visible as warnings.
+ * Annotations for the denied calls. A benign denial only warns when the run
+ * opened a PR (`newPr`): the old PRs' feedback is in the prompt, so it can't
+ * have hidden it. Every other denial fails the run, PR or not.
  */
 export function verdict(denied, newPr) {
-	return denied.map(line => `::${newPr ? 'warning' : 'error'}::${escapeData(line)}`)
+	return denied.map(line => `::${newPr && BENIGN_DENIAL.test(line) ? 'warning' : 'error'}::${escapeData(line)}`)
 }
 
 const feedbackItems = ({ comments, reviews, threads }) => [...comments, ...reviews, ...threads.flatMap(t => t.comments)]
@@ -71,11 +98,16 @@ export function supersede({ previous, newPr, since, ignored }, api) {
 			if (!api.isOpen(n)) continue
 			if (api.commits(n).some(isHumanCommit)) {
 				notes.push(`#${n} stays open because it has commits from a person. Reconcile it with this PR by hand.`)
-			} else if (feedbackItems(api.feedback(n)).some(isLateFeedback)) {
-				notes.push(`#${n} stays open because it got review feedback after this run started. Carry that over by hand.`)
 			} else {
-				api.close(n, `Superseded by #${newPr}, which re-runs the cleanup against the current base branch and carries this PR's open feedback forward. Feedback left here from now on won't be read.`)
-				closed.push(n)
+				const feedback = api.feedback(n)
+				if (feedback.truncated) {
+					notes.push(`#${n} stays open because it has more feedback than this run reads. Carry the rest over by hand.`)
+				} else if (feedbackItems(feedback).some(isLateFeedback)) {
+					notes.push(`#${n} stays open because it got review feedback after this run read it. Carry that over by hand.`)
+				} else {
+					api.close(n, `Superseded by #${newPr}, which re-runs the cleanup against the current base branch and carries this PR's open feedback forward. Feedback left here from now on won't be read.`)
+					closed.push(n)
+				}
 			}
 		} catch (error) {
 			notes.push(`Could not close #${n} (${error.message.split('\n')[0]}). Close it by hand.`)
@@ -103,7 +135,7 @@ function ghApi() {
 					'--paginate',
 					`repos/${repo}/pulls?state=open&base=${encodeURIComponent(process.env.BASE_BRANCH)}&per_page=100`,
 					'--jq',
-					'.[] | {number, created_at, head_ref: .head.ref, user: {type: .user.type}, labels: [.labels[].name]}',
+					'.[] | {number, created_at, head_ref: .head.ref, user: {type: .user.type, login: .user.login}, labels: [.labels[].name]}',
 				])
 			)
 				.filter(isCleanupPr)
@@ -119,7 +151,8 @@ function ghApi() {
 					'.[] | {parents: (.parents | length), author: .author.type}',
 				])
 			),
-		// {comments, reviews, threads}, each item {at, login, type, assoc, body}.
+		// {comments, reviews, threads, truncated}, each item {at, login, type, assoc,
+		// body}; truncated is true when a connection had more than the cap.
 		// A review's createdAt is when it was started, possibly hours before it
 		// was submitted. The newest feedback is the most likely unacted, so the
 		// caps keep the last items.
@@ -129,7 +162,7 @@ function ghApi() {
 					'api',
 					'graphql',
 					'-f',
-					'query=query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ comments(last:100){ nodes{ createdAt authorAssociation author{ __typename login } body } } reviews(last:100){ nodes{ submittedAt authorAssociation author{ __typename login } state body } } reviewThreads(last:100){ nodes{ isResolved path line comments(last:50){ nodes{ createdAt authorAssociation author{ __typename login } body } } } } } } }',
+					'query=query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ comments(last:100){ pageInfo{ hasPreviousPage } nodes{ createdAt authorAssociation author{ __typename login } body } } reviews(last:100){ pageInfo{ hasPreviousPage } nodes{ submittedAt authorAssociation author{ __typename login } state body } } reviewThreads(last:100){ pageInfo{ hasPreviousPage } nodes{ isResolved path line comments(last:50){ pageInfo{ hasPreviousPage } nodes{ createdAt authorAssociation author{ __typename login } body } } } } } } }',
 					'-f',
 					`owner=${repo.split('/')[0]}`,
 					'-f',
@@ -137,7 +170,7 @@ function ghApi() {
 					'-F',
 					`number=${n}`,
 					'--jq',
-					'.data.repository.pullRequest | def item: {at, login: .author.login, type: .author.__typename, assoc: .authorAssociation, body}; {comments: [.comments.nodes[] | .at = .createdAt | item], reviews: [.reviews.nodes[] | .at = .submittedAt | item + {state}], threads: [.reviewThreads.nodes[] | {isResolved, path, line, comments: [.comments.nodes[] | .at = .createdAt | item]}]}',
+					'.data.repository.pullRequest | def item: {at, login: .author.login, type: .author.__typename, assoc: .authorAssociation, body}; {comments: [.comments.nodes[] | .at = .createdAt | item], reviews: [.reviews.nodes[] | .at = .submittedAt | item + {state}], threads: [.reviewThreads.nodes[] | {isResolved, path, line, comments: [.comments.nodes[] | .at = .createdAt | item]}], truncated: ([.comments.pageInfo, .reviews.pageInfo, .reviewThreads.pageInfo, .reviewThreads.nodes[].comments.pageInfo] | any(.hasPreviousPage))}',
 				])
 			),
 		close: (n, comment) => gh(['pr', 'close', `${n}`, '--repo', repo, '--comment', comment]),
@@ -156,20 +189,32 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
 		// Before the fetch, so feedback that lands during it counts as late.
 		const started = new Date().toISOString()
 		let feedback = {}
+		const budget = { left: TOTAL_LIMIT }
 		try {
 			const ignored = ignoredAuthorLogins()
-			feedback = Object.fromEntries(api.openCleanupPrs().map(({ number }) => [number, promptFeedback(api.feedback(number), ignored)]))
+			feedback = Object.fromEntries(
+				api.openCleanupPrs().map(({ number, user }) => [number, promptFeedback(api.feedback(number), { ignored, author: user.login, budget })])
+			)
 		} catch (error) {
 			// Errs toward running the cleanup: the old PRs just stay open, as before.
 			console.log(`::warning::Could not read open cleanup PRs: ${error.message.split('\n')[0]}`)
 		}
+		if (budget.clipped) console.log(`::warning::Some feedback on the open cleanup PRs was cut to fit the size limit (${BODY_LIMIT} characters per item, ${TOTAL_LIMIT} in all).`)
 		const numbers = Object.keys(feedback)
 		console.log(numbers.length ? `Open cleanup PRs to supersede: ${numbers.join(', ')}` : 'No open cleanup PR to supersede.')
 		// One line of JSON: no comment text can end a GITHUB_OUTPUT entry.
 		fs.appendFileSync(process.env.GITHUB_OUTPUT, `numbers=${numbers.join(' ')}\nsince=${started}\nfeedback=${JSON.stringify(feedback)}\n`)
 	} else if (process.argv[2] === 'verdict') {
-		const newPr = api.openCleanupPrs().filter(pr => Date.parse(pr.created_at) >= Date.parse(since)).at(-1)?.number
-		const annotations = verdict(readDeniedCalls(process.argv[3]), newPr)
+		const denied = readDeniedCalls(process.argv[3])
+		let newPr
+		try {
+			newPr = api.openCleanupPrs().filter(pr => Date.parse(pr.created_at) >= Date.parse(since)).at(-1)?.number
+		} catch (error) {
+			// An unknown PR counts as none: a clean run goes on (the old PRs stay
+			// open) and a denied one records nothing.
+			console.log(`::warning::Could not look up this run's PR: ${error.message.split('\n')[0]}`)
+		}
+		const annotations = verdict(denied, newPr)
 		console.log(newPr ? `This run opened #${newPr}.` : 'This run opened no cleanup PR.')
 		for (const line of annotations) console.log(line)
 		fs.appendFileSync(process.env.GITHUB_OUTPUT, `pr=${newPr ?? ''}\n`)

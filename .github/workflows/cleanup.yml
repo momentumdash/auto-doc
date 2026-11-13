@@ -210,9 +210,9 @@ jobs:
           sparse-checkout: scripts
 
       # The action ends green even when the agent was denied tools, so judge its
-      # execution file before any later step treats the run as done. Denials
-      # fail the run only when the agent opened no PR; with one, they're
-      # warnings, since the old PRs' feedback reached it through the prompt.
+      # execution file before any later step treats the run as done. A denial
+      # fails the run unless it is a shell habit (grep, ls, a loop) and the
+      # agent opened its PR; the old PRs' feedback reached it through the prompt.
       - name: Check agent result
         id: verdict
         if: ${{ steps.agent.outcome == 'success' }}
