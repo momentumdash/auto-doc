@@ -30,8 +30,8 @@ on:
         type: string
         default: main
     secrets:
-      CLAUDE_CODE_OAUTH_TOKEN:
-        description: OAuth token for claude-code-action.
+      ANTHROPIC_API_KEY:
+        description: Anthropic API key for claude-code-action.
         required: true
       AUTO_DOC_APP_ID:
         description: GitHub App ID, for a dedicated bot identity. Requires vars.AUTO_DOC_USE_APP == 'true'.
@@ -169,7 +169,7 @@ jobs:
         if: ${{ steps.guard.outputs.denied != 'true' }}
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ steps.app_token.outputs.token || secrets.GITHUB_TOKEN }}
           prompt: ${{ steps.build_prompt.outputs.prompt }}
           # gh narrowed to api + pr. `gh api` can still reach most of the REST
