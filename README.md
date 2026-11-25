@@ -100,7 +100,7 @@ jobs:
       issues: write
       id-token: write
     secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
       AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
 ```
@@ -122,7 +122,7 @@ jobs:
       issues: write
       id-token: write
     secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
       AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
 ```
@@ -143,7 +143,7 @@ jobs:
       issues: write
       id-token: write
     secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       AUTO_DOC_APP_ID: ${{ secrets.AUTO_DOC_APP_ID }}
       AUTO_DOC_APP_PRIVATE_KEY: ${{ secrets.AUTO_DOC_APP_PRIVATE_KEY }}
 ```
@@ -172,8 +172,7 @@ Set these at the org level so new repos need nothing but the workflow files.
 
 | Name | Kind | Required | Purpose |
 | --- | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | secret | yes | Haiku classification calls in `extract.yml`. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | secret | yes | `claude-code-action` in `integrate.yml`, `cleanup.yml`, and `respond.yml`. |
+| `ANTHROPIC_API_KEY` | secret | yes | Haiku classification calls in `extract.yml`, and `claude-code-action` in `integrate.yml`, `cleanup.yml`, and `respond.yml`. |
 | `AUTO_DOC_APP_ID` | secret | no | GitHub App ID, for a dedicated bot identity. |
 | `AUTO_DOC_APP_PRIVATE_KEY` | secret | no | GitHub App private key (PEM). |
 | `AUTO_DOC_USE_APP` | variable | no | `'true'` to mint an App token instead of using `GITHUB_TOKEN`. |
